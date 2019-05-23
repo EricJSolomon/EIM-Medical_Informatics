@@ -1,0 +1,148 @@
+1.0: PREGNANCY IDENTIFICATION
+OK	1.1: CLAIMS
+OK		De Duplication
+OK		#PregID_Claims_WDD
+			[DBname]
+			[planname]
+			[memid]
+			[codeid]
+			[claim_startdate]
+			[LastUpdate]
+			[ProbPreg_StartDate]
+			[ProbPreg_DueDate]
+			[ProbPreg_Source]
+			[ProbPreg_Type]
+			[Rn]
+OK		#PregID_Claims_WODD
+			[DBname]
+			[planname]
+			[memid]
+			[codeid]
+			[claim_startdate]
+			[LastUpdate]
+			[ProbPreg_StartDate]
+			[ProbPreg_DueDate]
+			[ProbPreg_Source]
+			[ProbPreg_Type]
+			[Rn]
+OK	1.2: ENCOUNTERS
+OK		De Duplication
+OK		#PregID_Encounters_WDD
+			[DBname]
+			[planname]
+			[memid]
+			[codeid]
+			[claim_startdate]
+			[LastUpdate]
+			[ProbPreg_StartDate]
+			[ProbPreg_DueDate]
+			[ProbPreg_Source]
+			[ProbPreg_Type]
+			[Rn]
+OK		#PregID_Encounters_WODD
+			[DBname]
+			[planname]
+			[memid]
+			[codeid]
+			[claim_startdate]
+			[LastUpdate]
+			[ProbPreg_StartDate]
+			[ProbPreg_DueDate]
+			[ProbPreg_Source]
+			[ProbPreg_Type]
+			[Rn]
+OK	1.3: ATTRIBUTE W/O DUEDATE
+OK		De duplication
+OK		#PregID_Attribute_WODD
+			[DBname]
+			[planname]
+			[memid]
+			[codeid]
+			[LastUpdate]
+			[ProbPreg_StartDate]
+			[ProbPreg_DueDate]
+			[ProbPreg_Source]
+			[ProbPreg_Type]
+			[Rn]			
+OK	1.4: ATTRIBUTE W DUEDATE
+OK		De duplication
+OK		#PregID_Attribute_WDD
+			[DBname]
+			[planname]
+			[memid]
+			[AttributeID]
+			[AttributeValue]
+			[LastUpdate]
+			[ProbPreg_StartDate]
+			[ProbPreg_DueDate]
+			[ProbPreg_Source]
+			[ProbPreg_Type]
+			[Rn]
+	1.5: HEDIS - Not Being Used
+	1.6: RX - Not being used
+OK	1.7: LAB
+OK		#ProbPregLab_WDD
+			[memid]
+			[ProbPreg_Type]
+			[ProbPreg_Source]
+			[IdentificationDate]
+			[LastUpdate]
+			[ProbPreg_StartDate]
+			[ProbPreg_DueDate]
+OK		#ProbPregLab_WODD
+			[memid]
+			[ProbPreg_Type]
+			[ProbPreg_Source]
+			[IdentificationDate]
+			[LastUpdate]
+	1.8: 834/MEG - not being used
+OK	1.9: OUTCOME
+OK		ENCOUNTERS
+OK		CLAIMS
+OK		De Duplication
+OK		#PregDeliveries
+			[DBname]
+			[planname]
+			[memid]
+			[Delivery_AdmitDate]
+			[Delivery_Source]
+			[mem_dob]
+			[sex]
+
+CONSOLIDATION INTO REGISTRY
+2.0: Probable Pregnancies
+OK	2.1: ProbPreg ClaimsWDD
+OK		Update WDD currently WODD
+OK		Incert WDD currently not loaded
+OK	2.2: ProbPreg Encounters_WDD
+OK		Update WDD currently WODD
+OK		Incert WDD currently not loaded
+OK	2.3: ProbPreg LAB_WDD
+OK		Update WDD currently WODD
+OK		Incert WDD currently not loaded		
+OK	2.4: ProbPreg Attribute_WDD
+OK		Update WDD currently WODD
+OK		Incert WDD currently not loaded	
+OK	2.5: ProbPreg Claims_WODD
+OK	2.6: ProbPreg Encounters_WODD
+OK	2.7: ProbPreg Lab_WODD
+OK		Update mem DBname and Planname for members added from Lab
+OK	2.8: ProbPreg Attribute_WODD
+OK	2.9: ProbPreg Deliveries
+OK	2.10: PROBABLE PREGNANCY VIABILITY
+3.0: MEMBER INFORMAITON
+4.0: ENROLLMENT
+OK	Based on Admit Date
+OK	Based on Due Date
+OK	Based on Claim_StartDate
+OK	Based on Last Update
+5.0: DELIVERY
+OK	5.1: Delivery Admit Date
+OK	5.2: Delivery Classification
+OK	5.3: Delivery Outcome
+OK	5.4: Delivery Type
+OK	5.5: Delivery Complication
+6.0 Triggers ****TRIGGERS NEED TO BE REVIEWED****
+OK 7.0 Managed Members
+OK 8.0 Comments
+OK 9.0 Report Date
