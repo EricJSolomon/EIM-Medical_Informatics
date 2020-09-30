@@ -1,6 +1,6 @@
 USE [EricDB]
 GO
-/****** Object:  StoredProcedure [dbo].[sp_DARR]    Script Date: 9/30/2020 1:26:57 PM ******/
+/****** Object:  StoredProcedure [dbo].[sp_DARR_20200930]    Script Date: 9/30/2020 12:47:43 PM ******/
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
@@ -11,65 +11,87 @@ GO
 -- Create date: 9/1/2016
 -- Description:	Base data for DARR report in SSRS
 -- ========================================================================================================
-ALTER PROCEDURE [dbo].[sp_DARR] as
+ALTER PROCEDURE [dbo].[sp_DARR_20200930] as
 
---Get Receipt Dates from Attribute
-if object_id('tempdb..#c1') is not null drop table #c1 
-select distinct q.dbname, thevalue, ra.referralid, q.description, thegroup , x.Product, x.NF_401, r.authorizationid, r.servicecode, x.planname
+if object_id('tempdb..#c1') is not null drop table #c1 --456,986
+select distinct q.dbname, thevalue, ra.referralid, q.description,/* thegroup ,*/ x.Product, x.NF_401, r.authorizationid, r.servicecode, x.planname, r.receiptdate, r.utcreceiptdate
 into #c1 
-from stage.dbo.referralattribute ra join stage.dbo.qattribute q on q.attributeid = ra.attributeid and q.dbname = ra.dbname 
-join stage.dbo.referral r on r.referralid = ra.referralid and r.dbname = ra.dbname 
-join stage.dbo.enrollkeys ek on ek.enrollid = r.enrollid and ek.dbname = r.dbname and ek.segtype = 'int' and ek.effdate < ek.termdate
-join stage.dbo.benefitplan bp on bp.planid = ek.planid and bp.dbname = ek.dbname 
-join sheiladb.dbo.planx x on bp.planid = x.planid and bp.programid = x.programid and bp.dbname = x.dbname and x.SSRS = 'DARR'
+from stage.dbo.referralattribute ra (nolock)
+join stage.dbo.qattribute q (nolock) on q.attributeid = ra.attributeid and q.dbname = ra.dbname 
+join stage.dbo.referral r (nolock) on r.referralid = ra.referralid and r.dbname = ra.dbname 
+join stage.dbo.enrollkeys ek (nolock) on ek.enrollid = r.enrollid and ek.dbname = r.dbname and ek.segtype = 'int' and ek.effdate < ek.termdate
+join stage.dbo.benefitplan bp (nolock) on bp.planid = ek.planid and bp.dbname = ek.dbname 
+join sheiladb.dbo.planx x (nolock) on bp.planid = x.planid and bp.programid = x.programid and bp.dbname = x.dbname and x.SSRS = 'DARR'
 where q.description in ('Auth Receipt Date') and year(ra.createdate) >= year(getdate())-2
 delete from #c1 where thevalue = ''  or thevalue='MM/DD/YYY' or thevalue like '%.%' or thevalue like '%:%' or thevalue like '%,%' or sheiladb.dbo.fn_IsDate(thevalue)=0
 update #c1 set thevalue = cast(thevalue as date)
-if object_id('tempdb..#c2') is not null drop table #c2 select min(thevalue) thevalue, referralid, dbname, thegroup, Product, NF_401 
-	into #c2 from #c1 group by referralid, dbname, thegroup, product, NF_401
 
---Valid Auth Receipt Dates for CMS auths
+if object_id('tempdb..#c2') is not null drop table #c2 select min(thevalue) thevalue, referralid, authorizationid, dbname, Product, NF_401 
+	into #c2 from #c1 (nolock) group by referralid,authorizationid, dbname, product, NF_401
+
 if object_id('tempdb..#ar1') is not null drop table #ar1
-select distinct r.referralid, r.dbname,mp.planname, TheValue Auth_Receipt_date, TheGroup, servicecode, r.authorizationid
-, cast(r.receiptdate as date) Receipt_Date, cast(r.referraldate as date) Referral_Date, cast(r.createdate as date) Create_Date
+select distinct r.referralid, r.dbname,mp.planname, TheValue Auth_Receipt_date, r.servicecode, r.authorizationid
+, Receipt_Date = case 
+when r.dbname in ('IL','WI') and r.createdate >= '2019-11-01' and r.createdate <= '2020-03-07' and r.createid <> 'ePortal' then dateadd(hh,-8,utcreceiptdate)		--day time saving
+when r.dbname in ('IL','WI') and r.createdate > '2019-10-04' and r.createid <> 'ePortal' then dateadd(hh,-7,utcreceiptdate)
+when r.dbname in ('FL','WA') and r.createdate >= '2020-02-07' and r.utcreceiptdate is not null then dateadd(hh,-7,utcreceiptdate)
+when r.dbname in ('CA','MI') and r.createdate >='2020-05-08' and r.utcreceiptdate is not null then dateadd(hh,-7,utcreceiptdate)
+when r.dbname in ('OH') and r.createdate >= '2020-06-12' and r.utcreceiptdate is not null then dateadd(hh,-7,utcreceiptdate)
+when r.dbname in ('UT','UN') and r.createdate >= '2020-08-07' and r.utcreceiptdate is not null then dateadd(hh,-7,utcreceiptdate)
+else r.receiptdate end
+, cast(r.referraldate as date) Referral_Date, cast(r.createdate as date) Create_Date
 , mp.Product, mp.NF_401
-into #ar1 from stage.dbo.referral r (nolock)
-join stage.dbo.enrollkeys ek on ek.enrollid = r.enrollid and ek.segtype = 'int' and ek.effdate < ek.termdate and ek.dbname = r.dbname
-join sheiladb.dbo.planx mp on mp.dbname = ek.dbname and mp.planid = ek.planid and mp.SSRS = 'DARR'
+into #ar1 
+from stage.dbo.referral r (nolock) 
+join stage.dbo.enrollkeys ek (nolock) on ek.enrollid = r.enrollid and ek.segtype = 'int' and ek.effdate < ek.termdate and ek.dbname = r.dbname
+join sheiladb.dbo.planx mp (nolock) on mp.dbname = ek.dbname and mp.planid = ek.planid and mp.SSRS = 'DARR'
 left join #c2 ra on ra.referralid = r.referralid and ra.dbname = r.dbname
-where year(r.createdate) >= year(getdate())-2
+where year(r.createdate) >= year(getdate())-2 or year(r.receiptdate) >= year(getdate())-2
+
 update #ar1 set Receipt_Date = case when Receipt_Date in ('2078-12-31','1900-01-01') then null else Receipt_Date end
 update #ar1 set Referral_Date = case when Referral_Date in ('2078-12-31','1900-01-01') then null else Referral_Date end
 
---Meets Report Baseline Date Range & Identifies Inclusion Date
 if object_id('sheiladb.dbo.DARR_BaseDate') is not null drop table sheiladb.dbo.DARR_BaseDate 
-select *, isnull(Auth_Receipt_date, isnull(Receipt_Date,isnull(Referral_Date,isnull(Create_Date,null)))) Anchor_Date
+select distinct referralid, authorizationid,dbname, planname,auth_receipt_date,servicecode,receipt_date, referral_date, create_date,product, nf_401
+, cast(isnull(Auth_Receipt_date, isnull(Receipt_Date,isnull(Referral_Date,isnull(Create_Date,null)))) as date) Anchor_Date
 into sheiladb.dbo.DARR_BaseDate from #ar1 (nolock)
 
-delete from sheiladb.dbo.DARR_BaseDate where servicecode in ('*100','200','360','401','4011'
-,'1015','1016','1025','1026','1027','1028','1029','1030','1034','1035','1036','1037','1041','1042','1051','1052','1053','1054','1057','1058','1094','1096'
-,'1117','1118','1119','1125','1126','1127','1128','1132','1133','1136','1144','1145','1192'
-,'1209','1210','PN')
---delete from sheiladb.dbo.DARR_BaseDate where servicecode = '270' and dbname <> 'sc'
-delete from sheiladb.dbo.DARR_BaseDate where servicecode in ('130') and planname in ('SC','UT')
-delete from sheiladb.dbo.DARR_BaseDate where (authorizationid like 'IP%' or authorizationid like '%IP' or authorizationid like 'OP%' or authorizationid like '%OP' 
-or authorizationid like 'AL%' or authorizationid like '%AL' or authorizationid like 'APL%' or authorizationid like '%APL' )
+delete from sheiladb.dbo.DARR_BaseDate  where servicecode in ('*100','200','360','401','4011','1015','1016','1025','1026','1027','1028','1029','1030','1034','1035','1036','1037'
+,'1041','1042','1051','1052','1053','1054','1057','1058','1094','1096','1117','1118','1119','1125','1126','1127','1128','1132','1133','1136','1144','1145','1192','1209','1210','PN')
+delete from sheiladb.dbo.DARR_BaseDate where servicecode in ('130') and planname ='SC'
+delete from sheiladb.dbo.DARR_BaseDate  where (authorizationid like 'IP%' or authorizationid like '%IP' or authorizationid like 'OP%' or authorizationid like '%OP' 
+	or authorizationid like 'AL%' or authorizationid like '%AL' or authorizationid like 'APL%' or authorizationid like '%APL' )
 
 if object_id('tempdb..#x1') is not null drop table #x1 
 select distinct b.referralid, b.dbname, ra.thegroup, description, thevalue 
-into #x1 from stage.dbo.referralattribute ra join stage.dbo.qattribute q on q.attributeid = ra.attributeid and q.dbname = ra.dbname
-join sheiladb.dbo.darr_basedate b on b.referralid = ra.referralid and b.dbname = ra.dbname
+into #x1 from stage.dbo.referralattribute ra (nolock)
+join stage.dbo.qattribute (nolock) q on q.attributeid = ra.attributeid and q.dbname = ra.dbname
+join sheiladb.dbo.darr_basedate (nolock) b on b.referralid = ra.referralid and b.dbname = ra.dbname
 where description = 'Appeal Decision Date'
 delete from #x1 where thevalue = ''  or thevalue='MM/DD/YYY' or thevalue like '%.%' or thevalue like '%:%' or thevalue like '%,%' or sheiladb.dbo.fn_IsDate(thevalue)=0
 update #x1 set thevalue = cast(thevalue as date)
 
+if object_id('tempdb..#x2') is not null drop table #x2
+select distinct r.authorizationid, r.referralid, rtrim(p.fullname) IPA, r.dbname, x.planname into #x2
+from stage.dbo.referral r  (nolock)
+	join stage.dbo.memberpcp pcp (nolock) on r.enrollid = pcp.enrollid 	and r.effdate <= pcp.termdate and r.effdate >= pcp.effdate and r.dbname = pcp.dbname
+	join stage.dbo.affiliation (nolock) a on a.affiliationid = pcp.paytoaffilid and r.dbname = pcp.dbname
+	join stage.dbo.provider (nolock) p on p.provid = a.affiliateid 
+	join stage.dbo.enrollkeys ek on ek.enrollid = r.enrollid and ek.segtype = 'int' and ek.effdate < ek.termdate
+	join sheiladb.dbo.planxwalk x on x.planid = ek.planid 
+	where pcptype = 'pcp' and p.fullname like '%concerto%' and r.dbname = pcp.dbname and r.dbname = 'MA' and x.planname = 'WA'
+
+if object_id('tempdb..#x3') is not null drop table #x3
+select distinct referralid, ra.dbname, description, row_number()over(partition by referralid, ra.dbname order by referralid, ra.dbname) rn
+into #x3
+from stage.dbo.referralattribute ra  (nolock)
+join stage.dbo.qattribute (nolock) q on q.attributeid = ra.attributeid and ra.dbname = q.dbname 
+where description in ('Appeal Outcome - Upheld','Appeal Outcome - Partial Overturn','Appeal Outcome - Overturn')
+
 if object_id('sheiladb.dbo.DARR_CMSAuths2') is not null drop table sheiladb.dbo.DARR_CMSAuths2
 select distinct r.createid,r.userid,r.servicecode,rtrim(ac.description) Auth_Template,r.authstatus,r.memid,r.enrollid,r.acuity
 ,case when ac.AuthType in ('Inpatient') then 'Inpatient' else 'Outpatient' end Authtype
-,receiptdate = case 
-	when r.dbname='IL' and r.createdate >= '2019-11-03' and r.createdate <= '2020-03-07' and r.createid <> 'ePortal' then dateadd(hh,-8,r.utcreceiptdate) 
-	when r.dbname='IL' and r.createdate > '2019-10-04' and r.createid <> 'ePortal' then dateadd(hh,-7,r.utcreceiptdate) 
-	else r.receiptdate end
+,receiptdate = dbd.Receipt_Date--case when a.receiptdate = '1900-01-01' then r.receiptdate else a.receiptdate end 
 ,r.effdate,r.termdate,r.referralid,r.authorizationid,mp.dbname,r.self, r.Appeal 
 , Appeal_Outcome = case when o1.dbname is not null then 'OVERTURNED' when o2.dbname is not null then 'PARTIAL OVERTURN' when o3.dbname is not null then 'UPHELD'
 else r.appealoutcome end
@@ -99,66 +121,59 @@ else r.appealoutcome end
 , Partial = 'N'
 , Effective_Denial = 'N'
 , Anchor_Date
-into sheiladb.dbo.DARR_CMSAuths2 from stage.dbo.referral r 
-join sheiladb.dbo.DARR_BaseDate dbd on dbd.referralid = r.referralid and dbd.dbname = r.dbname --date constraint
-join stage.dbo.enrollkeys ek on ek.enrollid = r.enrollid and ek.dbname = r.dbname and ek.effdate < ek.termdate and ek.segtype = 'int'
-join stage.dbo.benefitplan bp on bp.planid = ek.planid and bp.dbname = ek.dbname 
-join stage.dbo.member m on m.memid = r.memid and m.dbname = r.dbname
-join sheiladb.dbo.planx mp on mp.planid = ek.planid and mp.dbname = ek.dbname and mp.SSRS = 'DARR'
-join stage.dbo.authcode ac on ac.codeid = r.servicecode and ac.dbname = r.dbname 
-join stage.dbo.authservice aus on aus.referralid = r.referralid and aus.dbname = r.dbname
+into sheiladb.dbo.DARR_CMSAuths2 from stage.dbo.referral r (nolock)
+join sheiladb.dbo.DARR_BaseDate (nolock) dbd on dbd.referralid = r.referralid and dbd.dbname = r.dbname 
+join stage.dbo.enrollkeys (nolock)  ek on ek.enrollid = r.enrollid and ek.dbname = r.dbname and ek.effdate < ek.termdate and ek.segtype = 'int'
+join stage.dbo.benefitplan (nolock)  bp on bp.planid = ek.planid and bp.dbname = ek.dbname 
+join stage.dbo.member (nolock)  m on m.memid = r.memid and m.dbname = r.dbname
+join sheiladb.dbo.planx (nolock)  mp on mp.planid = ek.planid and mp.dbname = ek.dbname and mp.SSRS = 'DARR'
+join stage.dbo.authcode (nolock)  ac on ac.codeid = r.servicecode and ac.dbname = r.dbname 
+join stage.dbo.authservice (nolock)  aus on aus.referralid = r.referralid and aus.dbname = r.dbname
+left join stage.dbo.authdata a on a.referralid = r.referralid and a.dbname = r.dbname
 left join (select distinct referralid, dbname, cast(min(thevalue) as datetime) Appeal_Dec_Date from #x1 group by referralid, dbname) 
 	x1 on x1.dbname = r.dbname and x1.referralid = r.referralid
-left join (select distinct referralid, ra.dbname from stage.dbo.referralattribute ra 
-	join stage.dbo.qattribute q on q.attributeid = ra.attributeid and ra.dbname = q.dbname where description = 'Appeal Outcome - Overturn') o1
-	on o1.dbname = r.dbname and o1.referralid = r.referralid
-left join (select distinct referralid, ra.dbname from stage.dbo.referralattribute ra 
-	join stage.dbo.qattribute q on q.attributeid = ra.attributeid and ra.dbname = q.dbname where description = 'Appeal Outcome - Partial Overturn') o2 
-	on o2.dbname = r.dbname and o2.referralid = r.referralid
-left join (select distinct referralid, ra.dbname from stage.dbo.referralattribute ra 
-	join stage.dbo.qattribute q on q.attributeid = ra.attributeid and ra.dbname = q.dbname where description = 'Appeal Outcome - Upheld') o3 
-	on o2.dbname = r.dbname and o2.referralid = r.referralid
-left join (select distinct referralid, ra.dbname from stage.dbo.referralattribute ra join stage.dbo.qattribute q on q.attributeid = ra.attributeid and q.dbname = ra.dbname 
+left join #x3 o1 on o1.dbname = r.dbname and o1.referralid = r.referralid and o1.description = 'Appeal Outcome - Overturn' and o1.rn = 1
+left join #x3 o2 on o2.dbname = r.dbname and o2.referralid = r.referralid and o2.description = 'Appeal Outcome - Partial Overturn' and o2.rn = 1
+left join #x3 o3 on o3.dbname = r.dbname and o3.referralid = r.referralid and o3.description = 'Appeal Outcome - Upheld' and o3.rn = 1
+left join (select distinct referralid, ra.dbname from stage.dbo.referralattribute ra  (nolock)
+join stage.dbo.qattribute (nolock)  q on q.attributeid = ra.attributeid and q.dbname = ra.dbname 
 			where thevalue = 'eviCore' and description = 'Auth Source') ev on ev.dbname = r.dbname and ev.referralid = r.referralid
-left join (select distinct aus.referralid, aus.dbname from stage.dbo.authservice aus 
-	join sheiladb.dbo.darr_basedate bd on bd.referralid = aus.referralid and (bd.dbname = aus.dbname or bd.dbname = 'ID' and aus.dbname = 'UN')
+left join (select distinct aus.referralid, aus.dbname from stage.dbo.authservice aus  (nolock)
+	join sheiladb.dbo.darr_basedate (nolock)  bd on bd.referralid = aus.referralid and (bd.dbname = aus.dbname or (bd.dbname = 'ID' and aus.dbname = 'UN'))
 	where status = 'denied') 
 	prt on prt.referralid = r.referralid and prt.dbname = r.dbname
-left join (select distinct aus.referralid, aus.dbname, aus.status from stage.dbo.authservice aus 
-	join sheiladb.dbo.darr_basedate bd on bd.referralid = aus.referralid and (bd.dbname = aus.dbname or bd.dbname = 'ID' and aus.dbname = 'UN')
+left join (select distinct aus.referralid, aus.dbname, aus.status from stage.dbo.authservice aus (nolock)
+	join sheiladb.dbo.darr_basedate (nolock)  bd on bd.referralid = aus.referralid and (bd.dbname = aus.dbname or (bd.dbname = 'ID' and aus.dbname = 'UN'))
 	where status = 'pend') 
 	pn on pn.referralid = r.referralid and pn.dbname = r.dbname
-left join stage.dbo.quser q on q.userid=r.userid left join stage.dbo.quser q1 on q1.loginid=r.createid
-left join Reports.dbo.MMP_Assigned_CM cm on cm.memid = r.memid collate database_default and cm.planname = mp.planname collate database_default and cm.CM_rn = '1' --Needs fix 
-left join sheiladb.dbo.Auth_Code_v2 ipc on ipc.codeid = r.servicecode and (ipc.dbname = r.dbname or ipc.dbname = 'ID' and r.dbname = 'UN')
-	and ipc.big_report = 'DARR' and ipc.rpt = 'IP' --IP Category
-left join sheiladb.dbo.Auth_Code_v2 pac on pac.codeid = r.servicecode and (pac.dbname = r.dbname or pac.dbname = 'ID' and r.dbname = 'UN')
-	and pac.big_report = 'DARR' and pac.rpt = 'PA' --PA Category
-left join (select row_number()over (partition by referralid, dbname order by sequence asc) rw, * from --AI Category
-				(select distinct r.referralid, r.authorizationid, r.dbname, ProcCat, aus.sequence from stage.dbo.referral r 
-				join sheiladb.dbo.DARR_BaseDate bd on bd.referralid = r.referralid and (bd.dbname = r.dbname or bd.dbname = 'ID' and r.dbname = 'UN')
-				join stage.dbo.authservice aus on r.referralid = aus.referralid and r.dbname = aus.dbname join stage.dbo.authcode ac on ac.codeid = r.servicecode and ac.dbname = r.dbname
-				join sheiladb.dbo.authtat_ai_category c on c.codeid = aus.codeid collate database_default and ac.authtype in ('Ancillary','Outpatient') and r.servicecode = '210' and bd.planname <>'FL'
-				union select distinct r.referralid, r.authorizationid, r.dbname, category, aus.sequence from stage.dbo.referral r 
-				join sheiladb.dbo.DARR_BaseDate bd on bd.referralid = r.referralid and (bd.dbname = r.dbname or bd.dbname = 'ID' and r.dbname = 'UN')
-				join stage.dbo.authservice aus on r.referralid = aus.referralid and r.dbname = aus.dbname join stage.dbo.authcode ac on ac.codeid = r.servicecode and ac.dbname = r.dbname
-				join sheiladb.dbo.ai_serv_groups c on c.catid = aus.catid collate DATABASE_default 
+left join stage.dbo.quser (nolock)  q on q.userid=r.userid left join stage.dbo.quser q1 on q1.loginid=r.createid
+left join Reports.dbo.MMP_Assigned_CM  (nolock) cm on cm.memid = r.memid collate database_default and cm.planname = mp.planname collate database_default and cm.CM_rn = '1' 
+left join sheiladb.dbo.Auth_Code_v2 (nolock)  ipc on ipc.codeid = r.servicecode and (ipc.dbname = r.dbname or (ipc.dbname = 'ID' and r.dbname = 'UN'))
+	and ipc.big_report = 'DARR' and ipc.rpt = 'IP' 
+left join sheiladb.dbo.Auth_Code_v2 (nolock)  pac on pac.codeid = r.servicecode and (pac.dbname = r.dbname or (pac.dbname = 'ID' and r.dbname = 'UN'))
+	and pac.big_report = 'DARR' and pac.rpt = 'PA'
+left join (select row_number()over (partition by referralid, dbname order by sequence asc) rw, * from  
+				(select distinct r.referralid, r.authorizationid, r.dbname, ProcCat, aus.sequence from stage.dbo.referral r  (nolock)
+				join sheiladb.dbo.DARR_BaseDate (nolock)  bd on bd.referralid = r.referralid and (bd.dbname = r.dbname or (bd.dbname = 'ID' and r.dbname = 'UN'))
+				join stage.dbo.authservice (nolock)  aus on r.referralid = aus.referralid and r.dbname = aus.dbname join stage.dbo.authcode ac on ac.codeid = r.servicecode and ac.dbname = r.dbname
+				join sheiladb.dbo.authtat_ai_category (nolock)  c on c.codeid = aus.codeid collate database_default and ac.authtype in ('Ancillary','Outpatient') and r.servicecode = '210' and bd.planname <>'FL'
+				union select distinct r.referralid, r.authorizationid, r.dbname, category, aus.sequence from stage.dbo.referral r  (nolock)
+				join sheiladb.dbo.DARR_BaseDate (nolock)  bd on bd.referralid = r.referralid and (bd.dbname = r.dbname or (bd.dbname = 'ID' and r.dbname = 'UN'))
+				join stage.dbo.authservice (nolock)  aus on r.referralid = aus.referralid and r.dbname = aus.dbname join stage.dbo.authcode ac on ac.codeid = r.servicecode and ac.dbname = r.dbname
+				join sheiladb.dbo.ai_serv_groups (nolock)  c on c.catid = aus.catid collate DATABASE_default 
 					and c.subcatid = aus.subcatid collate DATABASE_default and c.svcgroupid = aus.svcgroupid collate DATABASE_default and aus.codeid = '' and r.servicecode = '210' and bd.planname <>'FL') x)
 				c on c.referralid = r.referralid and (c.dbname = r.dbname or (r.dbname = 'UN' and c.dbname in ('MS','NY','ID'))) and c.rw = '1'
-left join (select distinct referralid,ra.dbname from stage.dbo.referralattribute ra join stage.dbo.qattribute q on q.attributeid=ra.attributeid and q.dbname=ra.dbname and q.description = 'retro review')
+left join (select distinct referralid,ra.dbname from stage.dbo.referralattribute ra  (nolock)
+				join stage.dbo.qattribute (nolock)  q on q.attributeid=ra.attributeid and q.dbname=ra.dbname and q.description = 'retro review')
 		rr on rr.referralid = r.referralid and r.dbname = rr.dbname
-left join (select distinct r.authorizationid, r.referralid, rtrim(p.fullname) IPA, dbname = 'MA' from [DC01Q56ILDSWV01].qnxt_plandata_mapd.dbo.referral r 
-	join [DC01Q56ILDSWV01].qnxt_plandata_mapd.dbo.memberpcp pcp on r.enrollid = pcp.enrollid 	and r.effdate <= pcp.termdate and r.effdate >= pcp.effdate 
-	join [DC01Q56ILDSWV01].qnxt_plandata_mapd.dbo.affiliation a on a.affiliationid = pcp.paytoaffilid
-	join [DC01Q56ILDSWV01].qnxt_plandata_mapd.dbo.provider p on p.provid = a.affiliateid where pcptype = 'pcp' and p.fullname like '%concerto%') IPA
+left join #x2 IPA
 	on ipa.referralid = r.referralid collate database_default and ipa.dbname = r.dbname collate database_default 
-
+	
 delete from sheiladb.dbo.DARR_CMSAuths2 where
 createid in ('concerto','MMPAuthLoadILAdmin','AuthLoad','AutoLoad','MMPAuthLoadCAAdmin','OHMMPAuthLoad','PRSpecialAuthLoad','OHMMPAuthLoad','PRAuthLoad','TANFAuthLoadILAdmin'
-,'MMPAuthLoadCAAdmin','MMPAuthLoadILAdmin','SPDAuthLoadCAAdmin','WAAuthSplit','AuthSplit','ILAuthAuto','MMC\AUTOSYSPROS','WAAutoLoad','WIAutoLoad','AutoLoad','ILAuthAuto') 
-or authstatus in ('closed','void') or userid in ('120172') --concerto assigned to
+,'MMPAuthLoadCAAdmin','MMPAuthLoadILAdmin','SPDAuthLoadCAAdmin','WAAuthSplit','AuthSplit','ILAuthAuto','MMC\AUTOSYSPROS','WAAutoLoad','WIAutoLoad','AutoLoad','ILAuthAuto','Auto Load, OH Authorization') 
+or authstatus in ('closed','void') or userid in ('120172') 
 
---Add Report
 update sheiladb.dbo.DARR_CMSAuths2 
 set rpt = case when Retro_Type = 'Y' then 'RR' when AImaging_Type = 'Y' and acuity = 'Emergency' then 'PA' 
 when AImaging_Type = 'Y' then 'AI' when IP_Type = 'Y' then 'IP' when PA_Type = 'Y' then 'PA' else 'PA' end
@@ -180,44 +195,43 @@ set ShortCat = case when ProcCat = 'Other' then 'Other' else ShortCat end
 
 update sheiladb.dbo.DARR_CMSAuths2
 set ShortCat = a.ShortCat
-from sheiladb.dbo.DARR_CMSAuths2 z
-join sheiladb.dbo.ShortCat a on a.ProcCat = z.ProcCat
+from sheiladb.dbo.DARR_CMSAuths2 (nolock)  z
+join sheiladb.dbo.ShortCat (nolock)  a on a.ProcCat = z.ProcCat
 
 if object_id('sheiladb.dbo.DARR_Inclusion') is not null drop table sheiladb.dbo.DARR_Inclusion
-select * into sheiladb.dbo.DARR_Inclusion from sheiladb.dbo.DARR_CMSAuths2
+select * into sheiladb.dbo.DARR_Inclusion from sheiladb.dbo.DARR_CMSAuths2 (nolock)
 
---additional exclusions
 if object_id('tempdb..#DARR_Exclusions') is not null drop table #DARR_Exclusions
 select distinct ra.referralid, o.dbname, xcld_typ = 'attr' 
 into #DARR_Exclusions 
-from stage.dbo.referralattribute ra join stage.dbo.qattribute q on q.attributeid = ra.attributeid and ra.dbname = q.dbname
-join sheiladb.dbo.DARR_Inclusion o on (o.dbname = ra.dbname or o.dbname = 'ID' and ra.dbname = 'UN') and o.referralid = ra.referralid
+from stage.dbo.referralattribute ra  (nolock)
+join stage.dbo.qattribute  (nolock) q on q.attributeid = ra.attributeid and ra.dbname = q.dbname
+join sheiladb.dbo.DARR_Inclusion  (nolock) o on (o.dbname = ra.dbname or (o.dbname = 'ID' and ra.dbname = 'UN')) and o.referralid = ra.referralid
 where q.description in ('Medical Claims Review','Provider Appeal','Claim Workflow','A&D Appeal','CIRT SUCCESSFULL? Yes/No','Claims Workflow','Pharmacy Team')
 union 
 select distinct a.referralid, a.dbname, xcld_typ = 'coc' 
-from sheiladb.dbo.DARR_Inclusion a 
-join (select rm.referralid, rm.dbname from stage.dbo.referralmemo rm join stage.dbo.memo m on m.memoid = rm.memoid and m.dbname = rm.dbname
-	join sheiladb.dbo.DARR_Inclusion a on a.referralid = rm.referralid and (a.dbname = rm.dbname or a.dbname = 'ID' and rm.dbname = 'UN')
+from sheiladb.dbo.DARR_Inclusion a  (nolock)
+join (select rm.referralid, rm.dbname from stage.dbo.referralmemo (nolock)  rm 
+	join stage.dbo.memo (nolock)  m on m.memoid = rm.memoid and m.dbname = rm.dbname
+	join sheiladb.dbo.DARR_Inclusion (nolock)  a on a.referralid = rm.referralid and (a.dbname = rm.dbname or (a.dbname = 'ID' and rm.dbname = 'UN'))
 			where m.description like '%coc%' and m.createdate between a.effdate and a.termdate and (source = 'MEMBER' or source = 'refr') ) 
-			mo on mo.referralid = a.referralid and (a.dbname = mo.dbname or a.dbname = 'ID' and mo.dbname = 'UN')
+			mo on mo.referralid = a.referralid and (a.dbname = mo.dbname or (a.dbname = 'ID' and mo.dbname = 'UN'))
 
--- Delete Exclusions
 delete sheiladb.dbo.DARR_inclusion
 from sheiladb.dbo.DARR_inclusion t1
 join #DARR_Exclusions t2 on t1.referralid = t2.referralid and t1.dbname = t2.dbname
 
---determine lines status for Partial & appeals
 if object_id ('tempdb..#DARR_lines1') is not null drop table #DARR_lines1
 select distinct a.referralid, a.authorizationid, a.rpt, a.acuity, a.dbname, a.servicecode, a.Appeal_Outcome, a.appeal,a.appeal_date
 , aus.sequence, aus.status, aus.catid, aus.codeid, aus.servcategory
 , Del = case when a.servicecode in ('150','190','340','380','1188') and aus.catid <>'' and rpt not in ('RR','IP') then 1 
 	when a.servicecode in ('1038','370') and aus.codeid <> '' and rpt not in ('RR','IP') then 1	else 0 end
 into #DARR_Lines1
-from sheiladb.dbo.DARR_inclusion a
-join stage.dbo.authservice aus on a.referralid = aus.referralid and a.dbname = aus.dbname
+from sheiladb.dbo.DARR_inclusion a (nolock)
+join stage.dbo.authservice (nolock)  aus on a.referralid = aus.referralid and a.dbname = aus.dbname
 update a set a.del = 1 
 from #DARR_Lines1 a
-join (select row_number() over (partition by referralid, dbname order by sequence) as RowNum, * from #DARR_Lines1 
+join (select row_number() over (partition by referralid, dbname order by sequence) as RowNum, * from #DARR_Lines1  (nolock)
 		where servicecode in ('370','1038') and rpt not in ('RR','IP'))
 x on a.dbname = x.dbname and a.referralid = x.referralid and a.sequence = x.sequence where x.RowNum <> 1
 delete from #DARR_Lines1 where del=1
@@ -227,33 +241,36 @@ select distinct x.referralid, x.authorizationid, x.rpt, x.acuity, x.dbname, x.se
 , Deny_Serv = case when d.referralid is not null then 1 else 0 end
 , Appr_Serv = case when a.referralid is not null then 1 else 0 end
 into sheiladb.dbo.DARR_Line_Status 
-from #DARR_Lines1 x
-left join (select distinct referralid, authorizationid, dbname from #DARR_Lines1 where status = 'DENIED') 
+from #DARR_Lines1 x (nolock)
+left join (select distinct referralid, authorizationid, dbname from #DARR_Lines1 (nolock) where status = 'DENIED') 
 		d on d.dbname = x.dbname and x.referralid = d.referralid
-left join (select distinct referralid, authorizationid, dbname from #DARR_Lines1 where status = 'APPROVED') 
+left join (select distinct referralid, authorizationid, dbname from #DARR_Lines1 (nolock) where status = 'APPROVED') 
 		a on a.dbname = x.dbname and x.referralid = a.referralid  
 
 if object_id('sheiladb.dbo.DARR_Appeal_Mod') is not null drop table sheiladb.dbo.DARR_Appeal_Mod
 select distinct a.*, x.Deny_Serv, x.Appr_Serv, b.Appeal_ID
 , case when a1.referralid is null then 0 else 1 end std_app_attr, case when a2.referralid is null then 0 else 1 end exp_app_attr
 , case when d1.referralid is null then 0 else 1 end std_den_attr, case when d2.referralid is null then 0 else 1 end exp_den_attr
-into sheiladb.dbo.DARR_Appeal_Mod from sheiladb.dbo.DARR_Inclusion a
-left join sheiladb.dbo.DARR_Line_Status x on x.dbname = a.dbname and x.referralid = a.referralid
-left join sheiladb.dbo.hcs_appeals b on a.dbname = b.dbname and a.referralid = b.referralid
-left join (select distinct referralid, dbname from sheiladb.dbo.DARR_Date where thegroup = 'STANDARD APPROVAL' 
-	union select distinct referralid, dbname from sheiladb.dbo.DARR_Time where thegroup = 'STANDARD APPROVAL') a1 --standard approval attr group
+, part_attr = case when p.referralid is not null then 1 else 0 end
+into sheiladb.dbo.DARR_Appeal_Mod from sheiladb.dbo.DARR_Inclusion a (nolock)
+left join sheiladb.dbo.DARR_Line_Status  (nolock) x on x.dbname = a.dbname and x.referralid = a.referralid
+left join sheiladb.dbo.hcs_appeals  (nolock) b on a.dbname = b.dbname and a.referralid = b.referralid
+left join (select distinct referralid, dbname from sheiladb.dbo.DARR_Date (nolock) where thegroup = 'STANDARD APPROVAL' 
+	union select distinct referralid, dbname from sheiladb.dbo.DARR_Time (nolock) where thegroup = 'STANDARD APPROVAL') a1
 	on a1.dbname = a.dbname and a1.referralid = a.referralid
-left join (select distinct referralid, dbname from sheiladb.dbo.DARR_Date where thegroup = 'EXPEDITED APPROVAL' 
-	union select distinct referralid, dbname from sheiladb.dbo.DARR_Time where thegroup like 'EXPEDITED APPROVAL') a2 --expedited approval attr group
+left join (select distinct referralid, dbname from sheiladb.dbo.DARR_Date (nolock) where thegroup = 'EXPEDITED APPROVAL' 
+	union select distinct referralid, dbname from sheiladb.dbo.DARR_Time (nolock) where thegroup like 'EXPEDITED APPROVAL') a2
 	on a2.dbname = a.dbname and a2.referralid = a.referralid
-left join (select distinct referralid, dbname from sheiladb.dbo.DARR_Date where thegroup like 'STANDARD DENIAL' 
-	union select distinct referralid, dbname from sheiladb.dbo.DARR_Time where thegroup like 'STANDARD DENIAL') d1 -- denial attr group
+left join (select distinct referralid, dbname from sheiladb.dbo.DARR_Date (nolock) where thegroup like 'STANDARD DENIAL' 
+	union select distinct referralid, dbname from sheiladb.dbo.DARR_Time (nolock) where thegroup like 'STANDARD DENIAL') d1
 	on d1.dbname = a.dbname and d1.referralid = a.referralid
-left join (select distinct referralid, dbname from sheiladb.dbo.DARR_Date where thegroup like 'EXPEDITED DENIAL' 
-	union select distinct referralid, dbname from sheiladb.dbo.DARR_Time where thegroup like 'EXPEDITED DENIAL') d2 -- denial attr group
+left join (select distinct referralid, dbname from sheiladb.dbo.DARR_Date (nolock) where thegroup like 'EXPEDITED DENIAL' 
+	union select distinct referralid, dbname from sheiladb.dbo.DARR_Time (nolock) where thegroup like 'EXPEDITED DENIAL') d2
 	on d2.dbname = a.dbname and d2.referralid = a.referralid
+left join (select distinct referralid, ra.dbname from stage.dbo.referralattribute ra 
+	join stage.dbo.qattribute q on q.attributeid = ra.attributeid and q.dbname = ra.dbname and description like '%partial approv%') p
+	on p.dbname = a.dbname and p.referralid = a.referralid
 
---Define effective denial & update inclusion
 update sheiladb.dbo.DARR_inclusion 
 set Effective_Denial = case 
 when (std_den_attr=1 or exp_den_attr=1) and (a.appeal='Y' or a.Appeal_Outcome_Attr_Overturn=1) and a.authstatus='APPROVED' 
@@ -261,12 +278,13 @@ when (std_den_attr=1 or exp_den_attr=1) and (a.appeal='Y' or a.Appeal_Outcome_At
 when (std_den_attr=1 or exp_den_attr=1) and (a.appeal='Y' or a.Appeal_Outcome_Attr_Overturn=1) and a.authstatus='APPROVED' 
 	and a.Appeal_Outcome in ('OTHER','PARTIAL OVERTURN') and Deny_Serv=1 and Appr_Serv=1 then 'Y'
 else a.Effective_Denial end
-from sheiladb.dbo.DARR_Inclusion a join sheiladb.dbo.DARR_Appeal_Mod b on a.dbname = b.dbname and a.referralid = b.referralid
+from sheiladb.dbo.DARR_Inclusion a  (nolock)
+join sheiladb.dbo.DARR_Appeal_Mod  (nolock) b on a.dbname = b.dbname and a.referralid = b.referralid
 
---Define partial & update inclusion
 update sheiladb.dbo.DARR_inclusion 
-set Partial = case when a.authstatus='APPROVED' and b.Deny_Serv=1 and b.Appr_Serv=1 and a.Effective_Denial = 'N' then 'Y' else a.Partial end
-from sheiladb.dbo.DARR_Inclusion a join sheiladb.dbo.DARR_Appeal_Mod b on a.dbname = b.dbname and a.referralid = b.referralid
+set Partial = case when a.authstatus='APPROVED' and b.Deny_Serv=1 and b.Appr_Serv=1 and a.Effective_Denial = 'N' and b.part_attr=1 then 'Y' else a.Partial end
+from sheiladb.dbo.DARR_Inclusion a  (nolock)
+join sheiladb.dbo.DARR_Appeal_Mod b  (nolock) on a.dbname = b.dbname and a.referralid = b.referralid
 
 if object_id('tempdb..#DARR_Denials') is not null drop table #DARR_Denials
 select distinct o.servicecode, o.acuity,o.dbname, o.referralid, o.authorizationid,o.authstatus, o.Partial,o.Effective_Denial
@@ -274,107 +292,115 @@ select distinct o.servicecode, o.acuity,o.dbname, o.referralid, o.authorizationi
 ,Med_Director=rtrim(e.firstname)+' '+rtrim(e.lastname),count(o.referralid) inst
 ,MD_Review = case when aus.meddirectorid = '' then 0 else 1 end
 into #DARR_Denials
-from sheiladb.dbo.DARR_Inclusion o join stage.dbo.authservice aus on aus.referralid = o.referralid and aus.dbname = o.dbname 
-left join stage.dbo.authservicereason asr on asr.referralid = o.referralid 
-	and (asr.dbname = o.dbname or (o.dbname in ('NY','ID','MS') and asr.dbname = 'UN')) and aus.status = 'denied' and asr.sequence = aus.sequence
-left join stage.dbo.reasongroupdtl rgd on rgd.reasongroupdtlid = asr.reasongroupdtlid and (rgd.dbname = o.dbname or (o.dbname in ('NY','ID','MS') and rgd.dbname = 'UN'))
-left join stage.dbo.authreason ar on ar.reasoncode = rgd.reasoncode and (ar.dbname = o.dbname or (o.dbname in ('NY','ID','MS') and ar.dbname = 'UN'))
-left join stage.dbo.entity e on e.entid = aus.meddirectorid and (o.dbname = e.dbname or (o.dbname in ('NY','ID','MS') and e.dbname = 'UN')) and e.enttype = 'MEDDIR' 
-group by o.dbname,o.referralid,o.authorizationid,o.authstatus,o.Partial,o.Effective_Denial,o.servicecode,o.acuity
-,aus.sequence,aus.status,ar.description,e.firstname,e.lastname,aus.meddirectorid
+from sheiladb.dbo.DARR_Inclusion o  (nolock)
+join stage.dbo.authservice  (nolock) aus on aus.referralid = o.referralid and aus.dbname = o.dbname 
+left join stage.dbo.authservicereason  (nolock) asr on asr.referralid = o.referralid 
+	and (asr.dbname = o.dbname or (o.dbname in ('NY','ID','MS') and asr.dbname = 'UN')) and aus.status = 'denied' and asr.sequence = aus.sequence and asr.qualifier = 'P'
+left join stage.dbo.reasongroupdtl  (nolock) rgd on rgd.reasongroupdtlid = asr.reasongroupdtlid and (rgd.dbname = o.dbname or (o.dbname in ('NY','ID','MS') and rgd.dbname = 'UN'))
+left join stage.dbo.authreason  (nolock) ar on ar.reasoncode = rgd.reasoncode and (ar.dbname = o.dbname or (o.dbname in ('NY','ID','MS') and ar.dbname = 'UN'))
+left join stage.dbo.entity  (nolock) e on e.entid = aus.meddirectorid and (o.dbname = e.dbname or (o.dbname in ('NY','ID','MS') and e.dbname = 'UN')) and e.enttype = 'MEDDIR' 
+group by o.dbname,o.referralid,o.authorizationid,o.authstatus,o.Partial,o.Effective_Denial,o.servicecode,o.acuity,aus.sequence,aus.status,ar.description,e.firstname,e.lastname,aus.meddirectorid
 
 if object_id('sheiladb.dbo.DARR_Denials') is not null drop table sheiladb.dbo.DARR_Denials
 select distinct a.dbname, a.referralid, a.authorizationid, authstatus, a.Partial, a.Effective_Denial
 ,MD_Review = case when a.authstatus <> 'DENIED' and a.Partial ='N' and a.Effective_Denial = 'N' then 'NA' 
-when b.referralid is not null then 'N'  --MD review missing from med nec line
-when e.referralid is not null then 'NA'  --MD review missing from any denied line 
+when b.referralid is not null then 'N' 
+when e.referralid is not null then 'NA'
 else 'Y' end
 ,Denial_Reason = case when a.authstatus <> 'DENIED' and a.Partial ='N' and a.Effective_Denial = 'N' then 'NA'
-when c.Denial_Reason is not null then c.Denial_Reason --med nec
-when d.Denial_Reason is not null then d.Denial_Reason --non med nec
+when c.Denial_Reason is not null then c.Denial_Reason
+when d.Denial_Reason is not null then d.Denial_Reason
 else 'N' end
-into sheiladb.dbo.DARR_Denials from #DARR_Denials a
-left join (select distinct dbname,referralid from #DARR_Denials where md_review = 0 and status = 'denied' and Denial_Reason like '%Denied Medical Necessity Criteria Not Met%') 
-		b on b.referralid = a.referralid and b.dbname = a.dbname --MD review missing from med nec denied line
+into sheiladb.dbo.DARR_Denials from #DARR_Denials a (nolock)
+left join (select distinct dbname,referralid from #DARR_Denials  (nolock)
+		where md_review = 0 and status = 'denied' and Denial_Reason like '%Denied Medical Necessity Criteria Not Met%') 
+		b on b.referralid = a.referralid and b.dbname = a.dbname 
 left join (select referralid, dbname,Denial_Reason,Med_Director, rn = row_number() over(partition by referralid, dbname, Denial_Reason order by sequence) 
-		from #DARR_Denials where Denial_Reason like '%Denied Medical Necessity Criteria Not Met%')
-		c on a.referralid = c.referralid and a.dbname = c.dbname and c.rn = '1' --Med nec
+		from #DARR_Denials (nolock) 
+		where Denial_Reason like '%Denied Medical Necessity Criteria Not Met%')
+		c on a.referralid = c.referralid and a.dbname = c.dbname and c.rn = '1'
 left join (select referralid, dbname,Denial_Reason,Med_Director, rn = row_number() over(partition by referralid, dbname, Denial_Reason order by inst) 
-		from #DARR_Denials where Denial_Reason not like '%Denied Medical Necessity Criteria Not Met%')
-		d on a.referralid = d.referralid and a.dbname = d.dbname and d.rn = '1'-- non med nec
-left join (select distinct dbname,referralid from #DARR_Denials where md_review = 0 and status = 'denied') 
-		e on e.referralid = a.referralid and e.dbname = a.dbname --MD review missing from any denied line
+		from #DARR_Denials  (nolock)
+		where Denial_Reason not like '%Denied Medical Necessity Criteria Not Met%')
+		d on a.referralid = d.referralid and a.dbname = d.dbname and d.rn = '1'
+left join (select distinct dbname,referralid from #DARR_Denials  (nolock)
+		where md_review = 0 and status = 'denied') 
+		e on e.referralid = a.referralid and e.dbname = a.dbname
 
--- Indicate Extension, NonPar
 if object_id('sheiladb.dbo.DARR_Ext') is not null drop table sheiladb.dbo.DARR_Ext
 select distinct o.*
 , case when thegroup in ('STANDARD EXTENSION','EXPEDITED EXTENSION') then '1' else '0' end as Ext
 , case when thegroup in ('EXPEDITED NON PAR PROV MORE INFO') then '1' else '0' end as Enp 
 into sheiladb.dbo.DARR_Ext 
-from stage.dbo.referralattribute ra join stage.dbo.qattribute q on q.attributeid = ra.attributeid and q.dbname = ra.dbname
-join sheiladb.dbo.DARR_Inclusion o on o.dbname = ra.dbname and o.referralid = ra.referralid
+from stage.dbo.referralattribute ra  (nolock)
+join stage.dbo.qattribute (nolock)  q on q.attributeid = ra.attributeid and q.dbname = ra.dbname
+join sheiladb.dbo.DARR_Inclusion  (nolock) o on o.dbname = ra.dbname and o.referralid = ra.referralid
 where thegroup in ('STANDARD EXTENSION','EXPEDITED EXTENSION','EXPEDITED NON PAR PROV MORE INFO') 
 
---Configure attributes for real date and time
 if object_id('tempdb..#att_date1') is not null drop table #att_date1
 select distinct o.authorizationid, thevalue, o.referralid,o.dbname, description, thegroup into #att_date1
-from sheiladb.dbo.DARR_Inclusion o left join (select ra.dbname, thevalue, description, thegroup, referralid from stage.dbo.referralattribute ra 
-			join stage.dbo.qattribute q on  q.attributeid = ra.attributeid and ra.dbname = q.dbname
+from sheiladb.dbo.DARR_Inclusion o  (nolock)
+left join (select ra.dbname, thevalue, description, thegroup, referralid from stage.dbo.referralattribute ra  (nolock)
+			join stage.dbo.qattribute (nolock)  q on  q.attributeid = ra.attributeid and ra.dbname = q.dbname
 			where description in ('PROV Verbal/ Fax Req Date','MBR Verbal Notif Date','Decision Date','PROV Notif Date','Auth Receipt Date','PROV Written Notif Date'
 			,'Delivery Receipt Date','MBR Written Notif Date','Additional info days','Mailed Expedited','Accepted as Expedited','Delivery Receipt Date','PROV Notif Date'
 			,'ToC – Discharge Orders or Summary sent to PCP','TOC – Verified Facility notified Member of Discharge','ToC – Verified Discharge Plan sent to Receiving Provider'
 			,'ToC - Approval, Preadmit Education faxed to Requested Prov','ToC – Approval, Preadmit Education & PHR sent to Mbr'
 			,'ToC – Notification of Emergent Admission sent to PCP','MODIFIED SERVICE REQUEST','Modified Service','Extension') ) ra
-			on (o.dbname = ra.dbname or o.dbname = 'ID' and ra.dbname = 'UN') and o.referralid = ra.referralid
+			on (o.dbname = ra.dbname or (o.dbname = 'ID' and ra.dbname = 'UN')) and o.referralid = ra.referralid
 delete from #att_date1 where thevalue = ''  or thevalue='MM/DD/YYY' or thevalue like '%.%' or thevalue like '%:%' or thevalue like '%,%' or sheiladb.dbo.fn_IsDate(thevalue)=0
 if object_id ('tempdb..#att_time1') is not null drop table #att_time1
 select distinct o.DBname, case when len(ltrim(rtrim(thevalue))) =3 then '0' + CAST(ltrim(rtrim(thevalue)) as varchar) else ltrim(rtrim(thevalue)) end TheValue,o.referralid,o.authorizationid, description, thegroup 
 into #att_time1 
-from stage.dbo.referralattribute ra 
-join stage.dbo.qattribute q on q.attributeid = ra.attributeid and q.dbname = ra.dbname 
-join sheiladb.dbo.DARR_Inclusion o on (o.dbname = ra.dbname or o.dbname = 'ID' and ra.dbname = 'UN') and o.referralid = ra.referralid
+from stage.dbo.referralattribute ra  (nolock)
+join stage.dbo.qattribute  (nolock) q on q.attributeid = ra.attributeid and q.dbname = ra.dbname 
+join sheiladb.dbo.DARR_Inclusion  (nolock) o on (o.dbname = ra.dbname or (o.dbname = 'ID' and ra.dbname = 'UN')) and o.referralid = ra.referralid
 			where 
 			(q.description in ('PROV Verbal/ Fax Req Time','MBR Written Notif Time'
 			,'PROV Written Notif Time','Expedited Delivery Receipt Time','MBR Verbal Notif Time'
 			,'Auth Receipt Time','Decision Time','PROV Notif Time','additional info time') or q.description like '%PROV Written Notif Time%')
 			and thevalue>'' and len(rtrim(ltrim(thevalue)))=4 and thevalue not like '%:%' and thevalue not like '%.%' and thevalue not like '%/%' and thevalue not like '%,%'
-			and ISNUMERIC(thevalue)=1 --verifies that the entry is set up like a real time value
-
+			and ISNUMERIC(thevalue)=1 
+			
 if object_id ('tempdb..#att_time2') is not null drop table #att_time2 
 select distinct DBname,ReferralID,authorizationid,TheValue
 ,Description = case when description like '%PROV Written Notif Time%' then 'PROV Written Notif Time' else Description end
 ,TheGroup 
-into #att_time2 from #att_time1
+into #att_time2 from #att_time1 (nolock)
 where left(TheValue,2) between 0 and 23 and right(thevalue,2) between 0 and 59
 
---||------//------/* Final Date & Time Tables */------\\-------||--
 if object_id ('tempdb..#DARR_Dates') is not null drop table #DARR_Dates
-select distinct a.* , convert(date,thevalue) Date_Value, getdate() Run_Date into #DARR_Dates from #att_date1 a 
+select distinct a.* , convert(date,thevalue) Date_Value, getdate() Run_Date into #DARR_Dates from #att_date1 a  (nolock)
 if object_id ('tempdb..#DARR_Times') is not null drop table #DARR_Times
-select distinct a.* , cast(left(thevalue,2)+':'+right(thevalue,2) as time) Time_Value, getdate() Run_Date into #DARR_Times from #att_time2 a 
-if object_id ('sheiladb.dbo.DARR_Date') is not null drop table sheiladb.dbo.DARR_Date --constrain to only single values
+select distinct a.* , cast(left(thevalue,2)+':'+right(thevalue,2) as time) Time_Value, getdate() Run_Date into #DARR_Times from #att_time2 a  (nolock)
+if object_id ('sheiladb.dbo.DARR_Date') is not null drop table sheiladb.dbo.DARR_Date --
 select distinct a.* into sheiladb.dbo.DARR_Date
-from #DARR_Dates a
-join (SELECT dbname,referralid,authorizationid,thegroup,Description FROM #att_date1 GROUP BY dbname,referralid,authorizationid,thegroup,Description HAVING count(thevalue) = 1) 
+from #DARR_Dates a (nolock)
+join (SELECT dbname,referralid,authorizationid,thegroup,Description FROM #att_date1  (nolock)
+		GROUP BY dbname,referralid,authorizationid,thegroup,Description HAVING count(thevalue) = 1) 
 		b on b.referralid = a.referralid and b.Description = a.Description and b.thegroup = a.thegroup and b.dbname = a.dbname
-if object_id ('sheiladb.dbo.DARR_Time') is not null drop table sheiladb.dbo.DARR_Time --constrain to only single values
+if object_id ('sheiladb.dbo.DARR_Time') is not null drop table sheiladb.dbo.DARR_Time 
 select distinct a.* into sheiladb.dbo.DARR_Time
-from #DARR_Times a join (SELECT dbname,referralid,authorizationid,thegroup,description FROM #att_time2 GROUP BY dbname,referralid,authorizationid,thegroup,description HAVING count(thevalue) = 1) 
+from #DARR_Times a  (nolock)
+join (SELECT dbname,referralid,authorizationid,thegroup,description FROM #att_time2  (nolock)
+		GROUP BY dbname,referralid,authorizationid,thegroup,description HAVING count(thevalue) = 1) 
 		b on b.referralid = a.referralid and b.description = a.description and b.thegroup = a.thegroup and b.dbname = a.dbname
 
-------/* Text Attributes ------/*------
-if object_id ('sheiladb.dbo.DARR_Text_Range') is not null drop table sheiladb.dbo.DARR_Text_Range  --attribute values required for end report, not date or time
-select distinct b.dbname, a.ReferralID,a.authorizationid, TheValue,  Description , TheGroup
-into sheiladb.dbo.DARR_Text_Range from stage.dbo.referral a join sheiladb.dbo.DARR_Inclusion b on (b.dbname = a.dbname or b.dbname = 'ID' and a.dbname = 'UN') and a.referralid = b.referralid
-join (select ra.dbname, thevalue, referralid, description, thegroup from stage.dbo.referralattribute ra join stage.dbo.qattribute q on  q.attributeid = ra.attributeid and q.dbname = ra.dbname
-			where description in ('Tracking #','# of Extension Days','Mailed Expedited','Reopened','Retro Review','Appeal Id','HH Continued Services') and thevalue>'') 
-			ra on ra.referralid = a.referralid and (ra.dbname = a.dbname or ra.dbname='UN' and a.dbname = 'ID')
-------Create pivot to align attributes with individual authorizations and exclude attributes not assigned to appropriate group------
+if object_id ('sheiladb.dbo.DARR_Text_Range') is not null drop table sheiladb.dbo.DARR_Text_Range
+select distinct b.dbname, a.ReferralID,a.authorizationid, TheValue
+,Description = case when Description like '%Partial%' then 'Partial' else Description end, TheGroup
+into sheiladb.dbo.DARR_Text_Range from stage.dbo.referral a  (nolock)
+join sheiladb.dbo.DARR_Inclusion (nolock)  b on (b.dbname = a.dbname or (b.dbname = 'ID' and a.dbname = 'UN')) and a.referralid = b.referralid
+join (select ra.dbname, thevalue, referralid, description, thegroup from stage.dbo.referralattribute ra  (nolock)
+join stage.dbo.qattribute (nolock)  q on  q.attributeid = ra.attributeid and q.dbname = ra.dbname
+			where description in ('Tracking #','# of Extension Days','Mailed Expedited','Reopened','Retro Review'
+			,'Appeal Id','HH Continued Services','Partial Approval/ Partial Denial','Partial Approval/Partial Denial') and thevalue>'') 
+			ra on ra.referralid = a.referralid and (ra.dbname = a.dbname or (ra.dbname='UN' and a.dbname = 'ID'))
 
-if OBJECT_ID('tempdb..#DatePivot') is not null drop table #Datepivot --Group Date Attributes by each authorization
+if OBJECT_ID('tempdb..#DatePivot') is not null drop table #Datepivot
 SELECT distinct * into #DatePivot
 FROM (SELECT distinct a.dbname+' - '+b.referralid Auth_Key, rtrim(description)+' - '+rtrim(thegroup) Attr_Key, Date_Value 
-        from sheiladb.dbo.DARR_Date a join sheiladb.dbo.DARR_Inclusion b on a.dbname = b.dbname and a.referralid = b.referralid 
+        from sheiladb.dbo.DARR_Date a  (nolock) join sheiladb.dbo.DARR_Inclusion (nolock)  b on a.dbname = b.dbname and a.referralid = b.referralid 
 		where TheGroup not in ('no group','') or (description = 'extension' and thegroup = 'no group')) 
 		as m PIVOT (min(date_value)
    FOR Attr_Key IN 
@@ -427,13 +453,13 @@ FROM (SELECT distinct a.dbname+' - '+b.referralid Auth_Key, rtrim(description)+'
 [PROV Written Notif Date - STANDARD DENIAL],
 [PROV Written Notif Date - STANDARD EXTENSION],
 [PROV Verbal/ Fax Req Date - EXPEDITED NON PAR PROV MORE INFO]
-)   
-)AS pvt 
+))AS pvt 
 
-if OBJECT_ID('tempdb..#TimePivot') is not null drop table #timepivot --Group Time Attributes by each authorization
+if OBJECT_ID('tempdb..#TimePivot') is not null drop table #timepivot
 SELECT distinct * into #TimePivot
 FROM ( SELECT distinct a.dbname+' - '+b.referralid Auth_Key, rtrim(description)+' - '+rtrim(thegroup) Attr_Key, Time_Value 
-        from sheiladb.dbo.DARR_Time a join sheiladb.dbo.DARR_Inclusion b on a.dbname = b.dbname and a.referralid = b.referralid where TheGroup not in ('no group','') 
+        from sheiladb.dbo.DARR_Time a  (nolock)
+		join sheiladb.dbo.DARR_Inclusion  (nolock) b on a.dbname = b.dbname and a.referralid = b.referralid where TheGroup not in ('no group','') 
 ) as m PIVOT (min(time_value)
   FOR Attr_Key IN ([Auth Receipt Time - EXPEDITED APPROVAL],
 [Auth Receipt Time - EXPEDITED CRITERIA NOT MET],
@@ -477,15 +503,14 @@ FROM ( SELECT distinct a.dbname+' - '+b.referralid Auth_Key, rtrim(description)+
 [PROV Written Notif Time - EXPEDITED EXTENSION],
 [PROV Written Notif Time - STANDARD DENIAL],
 [PROV Verbal/ Fax Req Time - EXPEDITED NON PAR PROV MORE INFO]
-)   
-)AS pvt 
+))AS pvt 
 
-if OBJECT_ID('tempdb..#TextPivot') is not null drop table #TextPivot --Group Text Attributes by each authorization
+if OBJECT_ID('tempdb..#TextPivot') is not null drop table #TextPivot 
 SELECT distinct * into #TextPivot
 FROM (
 SELECT distinct a.dbname+' - '+b.referralid Auth_Key, 
 rtrim(description)+' - '+rtrim(thegroup) Attr_Key, TheValue 
-        from sheiladb.dbo.DARR_Text_Range a join sheiladb.dbo.DARR_Inclusion b on a.dbname = b.dbname and a.referralid = b.referralid 
+        from sheiladb.dbo.DARR_Text_Range a  (nolock) join sheiladb.dbo.DARR_Inclusion b on a.dbname = b.dbname and a.referralid = b.referralid 
         where TheGroup not in ('no group','')
 ) as m PIVOT (min(thevalue)
    FOR Attr_Key IN ([# of Extension Days - EXPEDITED EXTENSION],
@@ -505,8 +530,8 @@ rtrim(description)+' - '+rtrim(thegroup) Attr_Key, TheValue
 [Tracking # - STANDARD DENIAL],
 [Tracking # - STANDARD EXTENSION]
 )) as pvt 
-
-if OBJECT_ID('tempdb..#DARR_Attributes_For_Calc') is not null drop table #DARR_Attributes_For_Calc --Combine All Attributes and group by each authorization
+--->next
+if OBJECT_ID('tempdb..#DARR_Attributes_For_Calc') is not null drop table #DARR_Attributes_For_Calc 
 select distinct  a.*, t.Auth_Key, Ext,Enp,[Extension - No Group],
 [PROV Verbal/ Fax Req Date - EXPEDITED NON PAR PROV MORE INFO],[PROV Verbal/ Fax Req Time - EXPEDITED NON PAR PROV MORE INFO]
 ,[# of Extension Days - EXPEDITED EXTENSION]	,[# of Extension Days - STANDARD EXTENSION]	,[PROV Written Notif Time - STANDARD DENIAL]
@@ -527,34 +552,36 @@ select distinct  a.*, t.Auth_Key, Ext,Enp,[Extension - No Group],
 ,[PROV Written Notif Date - EXPEDITED CRITERIA NOT MET],[PROV Written Notif Date - EXPEDITED DENIAL],[PROV Written Notif Date - EXPEDITED EXTENSION],[PROV Written Notif Date - STANDARD DENIAL],[PROV Written Notif Date - STANDARD EXTENSION],[PROV Written Notif Time - EXPEDITED CRITERIA NOT MET],[PROV Written Notif Time - EXPEDITED DENIAL],[PROV Written Notif Time - EXPEDITED EXTENSION]
 ,[Tracking # - EXPEDITED APPROVAL],[Tracking # - EXPEDITED CRITERIA NOT MET],[Tracking # - EXPEDITED DENIAL],[Tracking # - EXPEDITED EXTENSION],[Tracking # - STANDARD APPROVAL],[Tracking # - STANDARD DENIAL],[Tracking # - STANDARD EXTENSION]
 into #DARR_Attributes_For_Calc
-from sheiladb.dbo.DARR_Inclusion a
+from sheiladb.dbo.DARR_Inclusion a  (nolock)
 left join #DatePivot d on (a.dbname+' - '+a.referralid) = d.Auth_key
 left join #TimePivot t on (a.dbname+' - '+a.referralid) = t.Auth_key
 left join #TextPivot x on (a.dbname+' - '+a.referralid) = x.Auth_key
 left join sheiladb.dbo.DARR_Ext ex on ex.referralid = a.referralid and ex.dbname = a.dbname
 
------Align naming conventions with final report layout------
 if OBJECT_ID('sheiladb.dbo.DARR_Attributes_For_Calc') is not null drop table sheiladb.dbo.DARR_Attributes_For_Calc
-select distinct a.*,
-case when acuity = 'urgent' and authstatus = 'approved' and [Auth Receipt Date - EXPEDITED APPROVAL] is not null and [Auth Receipt Time - EXPEDITED APPROVAL] is not null 
+select distinct a.*
+--a.createid,a.userid,a.servicecode,a.Auth_Template,a.authstatus,a.memid,a.enrollid,a.acuity,a.Authtype,a.receiptdate,a.effdate,a.termdate,a.referralid,a.authorizationid,a.dbname
+--,a.self,a.Appeal,a.Appeal_Outcome,a.Appeal_Outcome_Attr_Overturn,a.Appeal_date,a.appealdate,a.appeal_dec_date,a.lob,a.planname,a.lobname,a.cmscontractid,a.CMSPlan_No,a.Create_By
+--,a.Assigned_To,a.Assign_CM_Fullname,a.referfrom,a.referto,a.createdate,a.referraldate,a.carriermemid,a.headofhouse,a.planid,a.BenefitPlan,a.acty_grp,a.compliance_acuity,a.rpt
+--,a.ProcCat,a.ShortCat,a.Retro_Type,a.AImaging_Type,a.IP_Type,a.PA_Type,a.AImaging_Cat,a.IP_Cat,a.PA_Cat,a.eviCore,a.atrtyp,a.Pend_Service,a.IPA,a.Partial,a.Effective_Denial,a.Anchor_Date,a.Auth_Key,a.Ext,a.Enp
+,case when acuity = 'urgent' and authstatus = 'approved' and [Auth Receipt Date - EXPEDITED APPROVAL] is not null and [Auth Receipt Time - EXPEDITED APPROVAL] is not null 
 	then cast([Auth Receipt Date - EXPEDITED APPROVAL] as datetime) + cast([Auth Receipt Time - EXPEDITED APPROVAL] as datetime) 
 	when acuity = 'urgent' and authstatus = 'denied' and [Auth Receipt Date - EXPEDITED DENIAL] is not null and [Auth Receipt Time - EXPEDITED DENIAL] is not null 
 	then cast([Auth Receipt Date - EXPEDITED DENIAL] as datetime) + cast([Auth Receipt Time - EXPEDITED DENIAL] as datetime) 
-	when acuity in ('elective','emergency') and authstatus = 'approved' and [Auth Receipt Date - STANDARD APPROVAL] is not null --and [Auth Receipt Time - STANDARD APPROVAL] is not null 
-	then cast([Auth Receipt Date - STANDARD APPROVAL] as datetime) --+ cast([Auth Receipt Time - STANDARD APPROVAL] as datetime) 
-	when acuity in ('elective','emergency') and authstatus = 'denied' and [Auth Receipt Date - STANDARD DENIAL] is not null --and [Auth Receipt Time - STANDARD DENIAL] is not null 
-	then cast([Auth Receipt Date - STANDARD DENIAL] as datetime) --+ cast([Auth Receipt Time - STANDARD DENIAL] as datetime)
+	when acuity in ('elective','emergency') and authstatus = 'approved' and [Auth Receipt Date - STANDARD APPROVAL] is not null 
+	then cast([Auth Receipt Date - STANDARD APPROVAL] as datetime)
+	when acuity in ('elective','emergency') and authstatus = 'denied' and [Auth Receipt Date - STANDARD DENIAL] is not null 
+	then cast([Auth Receipt Date - STANDARD DENIAL] as datetime)
 	end Match_Auth_Receipt,
 case when acuity = 'urgent' and authstatus = 'approved' and [Decision Date - EXPEDITED APPROVAL] is not null and [Decision Time - EXPEDITED APPROVAL] is not null 
 	then cast([Decision Date - EXPEDITED APPROVAL] as datetime) + cast([Decision Time - EXPEDITED APPROVAL] as datetime) 
 	when acuity = 'urgent' and authstatus = 'denied' and [Auth Receipt Date - EXPEDITED DENIAL] is not null and [Decision Time - EXPEDITED DENIAL] is not null 
 	then cast([Decision Date - EXPEDITED DENIAL] as datetime) + cast([Decision Time - EXPEDITED DENIAL] as datetime) 
-	when acuity in ('elective','emergency') and authstatus = 'approved' and [Decision Date - STANDARD APPROVAL] is not null --and [Decision Time - STANDARD APPROVAL] is not null 
-	then cast([Decision Date - STANDARD APPROVAL] as datetime) --+ cast([Decision Time - STANDARD APPROVAL] as datetime) 
-	when acuity in ('elective','emergency') and authstatus = 'denied' and [Decision Date - STANDARD DENIAL] is not null --and [Decision Time - STANDARD DENIAL] is not null 
-	then cast([Decision Date - STANDARD DENIAL] as datetime) --+ cast([Decision Time - STANDARD DENIAL] as datetime)
+	when acuity in ('elective','emergency') and authstatus = 'approved' and [Decision Date - STANDARD APPROVAL] is not null 
+	then cast([Decision Date - STANDARD APPROVAL] as datetime) 
+	when acuity in ('elective','emergency') and authstatus = 'denied' and [Decision Date - STANDARD DENIAL] is not null 
+	then cast([Decision Date - STANDARD DENIAL] as datetime)
 	end Match_Decision,
------#-----/* Expedited Approval */
 [Auth Receipt Date - EXPEDITED APPROVAL] Exp_Appr_Auth_Receipt_Date,
 [Auth Receipt Time - EXPEDITED APPROVAL] Exp_Appr_Auth_Receipt_Time	,
 case when [Auth Receipt Date - EXPEDITED APPROVAL] is not null and [Auth Receipt Time - EXPEDITED APPROVAL] is not null then 
@@ -573,7 +600,8 @@ case when [MBR Written Notif Date - EXPEDITED APPROVAL] is not null and [MBR Wri
 cast([MBR Written Notif Date - EXPEDITED APPROVAL]	as datetime) + cast([MBR Written Notif Time - EXPEDITED APPROVAL]	as datetime) end Exp_Appr_Mbr_Written_Raw	,
 case when [MBR Written Notif Date - EXPEDITED APPROVAL] is null or  [MBR Written Notif Time - EXPEDITED APPROVAL] is null then null
 when [Tracking # - EXPEDITED APPROVAL] like 'Cour%' 
-then cast([MBR Written Notif Date - EXPEDITED APPROVAL]	as datetime) + cast([MBR Written Notif Time - EXPEDITED APPROVAL]	as datetime)
+then cast([MBR Written Notif Date - EXPEDITED APPROVAL]	as datetime) + cast([MBR Written Notif Time - EXPEDITED APPROVAL]	as datetime) 
+when datename(dw,[MBR Written Notif Date - EXPEDITED APPROVAL]) in ('Sunday') then cast([MBR Written Notif Date - EXPEDITED APPROVAL]	as datetime) + cast('23:59' as datetime)+1
 when planname = 'WI' and [MBR Written Notif Time - EXPEDITED APPROVAL] <= '14:00' then cast([MBR Written Notif Date - EXPEDITED APPROVAL]	as datetime) + cast('23:59' as datetime)
 when planname = 'WI' and [MBR Written Notif Time - EXPEDITED APPROVAL] > '14:00' and datename(dw,[MBR Written Notif Date - EXPEDITED APPROVAL]) <> 'Saturday'
 then cast([MBR Written Notif Date - EXPEDITED APPROVAL]	as datetime) + cast('23:59' as datetime)+1
@@ -597,7 +625,6 @@ case when [Delivery Receipt Date - EXPEDITED APPROVAL] is not null and [Expedite
 cast([Delivery Receipt Date - EXPEDITED APPROVAL] as datetime) + cast([Expedited Delivery Receipt Time - EXPEDITED APPROVAL] as datetime) end Exp_Appr_Delivery,
 case when [PROV Notif Date - EXPEDITED APPROVAL] is not null and [PROV Notif Time - EXPEDITED APPROVAL] is not null then 
 cast([PROV Notif Date - EXPEDITED APPROVAL]	as datetime) + cast([PROV Notif Time - EXPEDITED APPROVAL]	as datetime) end Exp_Appr_Prov	,
------#-----/* Expedited Denial */
 [Auth Receipt Date - EXPEDITED DENIAL] Exp_Deny_Auth_Receipt_Date,
 [Auth Receipt Time - EXPEDITED DENIAL]Exp_Deny_Auth_Receipt_Time,
 case when [Auth Receipt Date - EXPEDITED DENIAL] is not null and [Auth Receipt Time - EXPEDITED DENIAL] is not null then 
@@ -615,18 +642,19 @@ cast([MBR Verbal Notif Date - EXPEDITED DENIAL]	as datetime) + cast([MBR Verbal 
 cast([MBR Written Notif Date - EXPEDITED DENIAL]	as datetime) + cast([MBR Written Notif Time - EXPEDITED DENIAL]	as datetime) 	Exp_Deny_Mbr_Written_Raw	,
 case when [MBR Written Notif Date - EXPEDITED DENIAL] is null or  [MBR Written Notif Time - EXPEDITED DENIAL] is null then null
 when [Tracking # - EXPEDITED DENIAL] like 'Cour%' then cast([MBR Written Notif Date - EXPEDITED DENIAL] as datetime) + cast([MBR Written Notif Time - EXPEDITED DENIAL] as datetime)
+when datename(dw,[MBR Written Notif Date - EXPEDITED DENIAL]) = 'Sunday' then cast([MBR Written Notif Date - EXPEDITED DENIAL]	as datetime) + cast('23:59' as datetime)+1
 when planname = 'WI' and [MBR Written Notif Time - EXPEDITED DENIAL] <= '14:00' then cast([MBR Written Notif Date - EXPEDITED DENIAL]	as datetime) + cast('23:59' as datetime)
-when planname = 'WI' and [MBR Written Notif Time - EXPEDITED DENIAL] > '14:00' and datename(dw,[MBR Written Notif Date - EXPEDITED DENIAL]) <> 'Saturday'
+when planname = 'WI' and [MBR Written Notif Time - EXPEDITED DENIAL] > '14:00' and datename(dw,[MBR Written Notif Date - EXPEDITED DENIAL]) <>'Saturday'
 then cast([MBR Written Notif Date - EXPEDITED DENIAL]	as datetime) + cast('23:59' as datetime)+1
 when planname = 'WI' and [MBR Written Notif Time - EXPEDITED DENIAL] > '14:00' and datename(dw,[MBR Written Notif Date - EXPEDITED DENIAL]) = 'Saturday'
 then cast([MBR Written Notif Date - EXPEDITED DENIAL]	as datetime) + cast('23:59' as datetime)+2 
 when planname = 'OH' and [MBR Written Notif Time - EXPEDITED DENIAL] <= '16:00' then cast([MBR Written Notif Date - EXPEDITED DENIAL]	as datetime) + cast('23:59' as datetime)
-when planname = 'OH' and [MBR Written Notif Time - EXPEDITED DENIAL] > '16:00' and datename(dw,[MBR Written Notif Date - EXPEDITED DENIAL]) <> 'Saturday'
+when planname = 'OH' and [MBR Written Notif Time - EXPEDITED DENIAL] > '16:00' and datename(dw,[MBR Written Notif Date - EXPEDITED DENIAL]) <>'Saturday'
 then cast([MBR Written Notif Date - EXPEDITED DENIAL]	as datetime) + cast('23:59' as datetime)+1
 when planname = 'OH' and [MBR Written Notif Time - EXPEDITED DENIAL] > '16:00' and datename(dw,[MBR Written Notif Date - EXPEDITED DENIAL]) = 'Saturday'
 then cast([MBR Written Notif Date - EXPEDITED DENIAL]	as datetime) + cast('23:59' as datetime)+2 
 when [MBR Written Notif Time - EXPEDITED DENIAL] <= '15:45' then cast([MBR Written Notif Date - EXPEDITED DENIAL]	as datetime) + cast('23:59' as datetime)
-when [MBR Written Notif Time - EXPEDITED DENIAL] > '15:45' and datename(dw,[MBR Written Notif Date - EXPEDITED DENIAL]) <> 'Saturday'
+when [MBR Written Notif Time - EXPEDITED DENIAL] > '15:45' and datename(dw,[MBR Written Notif Date - EXPEDITED DENIAL]) <>'Saturday'
 then cast([MBR Written Notif Date - EXPEDITED DENIAL]	as datetime) + cast('23:59' as datetime)+1
 when [MBR Written Notif Time - EXPEDITED DENIAL] > '15:45' and datename(dw,[MBR Written Notif Date - EXPEDITED DENIAL]) = 'Saturday'
 then cast([MBR Written Notif Date - EXPEDITED DENIAL]	as datetime) + cast('23:59' as datetime)+2 end Exp_Deny_Mbr_Written	,
@@ -644,7 +672,6 @@ cast([PROV Notif Date - EXPEDITED DENIAL]	as datetime) + cast([PROV Notif Time -
 [PROV Written Notif Time - EXPEDITED DENIAL] Exp_Deny_Prov_Written_Time,
 case when [PROV Written Notif Date - EXPEDITED DENIAL] is not null and [PROV Written Notif Time - EXPEDITED DENIAL] is not null then 
 cast([PROV Written Notif Date - EXPEDITED DENIAL]	as datetime) + cast([PROV Written Notif Time - EXPEDITED DENIAL]	as datetime) end Exp_Deny_Prov_Written,
------#-----/* Ex Crit Not Met */
 [Auth Receipt Date - EXPEDITED CRITERIA NOT MET] Exp_Crit_Auth_Receipt_Date	,
 [Auth Receipt Time - EXPEDITED CRITERIA NOT MET] Exp_Crit_Auth_Receipt_Time	,
 case when [Auth Receipt Date - EXPEDITED CRITERIA NOT MET] is not null and [Auth Receipt Time - EXPEDITED CRITERIA NOT MET] is not null then 
@@ -663,6 +690,8 @@ case when [MBR Written Notif Date - EXPEDITED CRITERIA NOT MET] is not null and 
 cast([MBR Written Notif Date - EXPEDITED CRITERIA NOT MET]	as datetime) + cast([MBR Written Notif Time - EXPEDITED CRITERIA NOT MET]	as datetime) end	Exp_Crit_Mbr_Written_Raw	,
 case when [MBR Written Notif Date - EXPEDITED CRITERIA NOT MET] is null or  [MBR Written Notif Time - EXPEDITED CRITERIA NOT MET] is null then null
 when [Tracking # - EXPEDITED CRITERIA NOT MET] like 'Cour%' then cast([MBR Written Notif Date - EXPEDITED CRITERIA NOT MET] as datetime) + cast([MBR Written Notif Time - EXPEDITED CRITERIA NOT MET] as datetime)
+when datename(dw,[MBR Written Notif Date - EXPEDITED CRITERIA NOT MET]) = 'Sunday'
+then cast([MBR Written Notif Date - EXPEDITED CRITERIA NOT MET]	as datetime) + cast('23:59' as datetime)+1
 when planname = 'WI' and [MBR Written Notif Time - EXPEDITED CRITERIA NOT MET] <= '14:00' then cast([MBR Written Notif Date - EXPEDITED CRITERIA NOT MET]	as datetime) + cast('23:59' as datetime)
 when planname = 'WI' and [MBR Written Notif Time - EXPEDITED CRITERIA NOT MET] > '14:00' and datename(dw,[MBR Written Notif Date - EXPEDITED CRITERIA NOT MET]) <> 'Saturday'
 then cast([MBR Written Notif Date - EXPEDITED CRITERIA NOT MET]	as datetime) + cast('23:59' as datetime)+1
@@ -693,7 +722,6 @@ cast([PROV Notif Date - EXPEDITED CRITERIA NOT MET]	as datetime) + cast([PROV No
 [PROV Written Notif Time - EXPEDITED CRITERIA NOT MET] Exp_Crit_Prov_Written_Time,
 case when [PROV Written Notif Date - EXPEDITED CRITERIA NOT MET] is null or  [PROV Written Notif Time - EXPEDITED CRITERIA NOT MET] is null then null else
 cast([PROV Written Notif Date - EXPEDITED CRITERIA NOT MET]	as datetime) + cast([PROV Written Notif Time - EXPEDITED CRITERIA NOT MET]	as datetime) end Exp_Crit_Prov_Written	,
------#-----/* Ex Ext */
 [Auth Receipt Date - EXPEDITED EXTENSION] Exp_Ext_Auth_Receipt_Date	,
 [Auth Receipt Time - EXPEDITED EXTENSION] Exp_Ext_Auth_Receipt_Time	,
 case when [Auth Receipt Date - EXPEDITED EXTENSION] is null or  [Auth Receipt Time - EXPEDITED EXTENSION] is null then null else
@@ -713,6 +741,7 @@ case when [MBR Written Notif Date - EXPEDITED EXTENSION] is null or  [MBR Writte
 cast([MBR Written Notif Date - EXPEDITED EXTENSION]	as datetime) + cast([MBR Written Notif Time - EXPEDITED EXTENSION]	as datetime) end Exp_Ext_Mbr_Written_Raw	,
 case when [MBR Written Notif Date - EXPEDITED EXTENSION] is null or  [MBR Written Notif Time - EXPEDITED EXTENSION] is null then null
 when [Tracking # - EXPEDITED EXTENSION] like 'Cour%' then cast([MBR Written Notif Date - EXPEDITED EXTENSION]	as datetime) + cast([MBR Written Notif Time - EXPEDITED EXTENSION]	as datetime)
+when datename(dw,[MBR Written Notif Date - EXPEDITED EXTENSION]) = 'Sunday' then cast([MBR Written Notif Date - EXPEDITED EXTENSION]	as datetime) + cast('23:59' as datetime)
 when planname = 'WI' and [MBR Written Notif Time - EXPEDITED EXTENSION] <= '14:00' then cast([MBR Written Notif Date - EXPEDITED EXTENSION]	as datetime) + cast('23:59' as datetime)
 when planname = 'WI' and [MBR Written Notif Time - EXPEDITED EXTENSION] > '14:00' and datename(dw,[MBR Written Notif Date - EXPEDITED EXTENSION]) <> 'Saturday'
 then cast([MBR Written Notif Date - EXPEDITED EXTENSION]	as datetime) + cast('23:59' as datetime)+1
@@ -743,12 +772,10 @@ cast([PROV Notif Date - EXPEDITED EXTENSION]	as datetime) + cast([PROV Notif Tim
 [PROV Written Notif Time - EXPEDITED EXTENSION] Exp_Ext_Prov_Written_Time	,
 case when [PROV Written Notif Date - EXPEDITED EXTENSION] is null or [PROV Written Notif Time - EXPEDITED EXTENSION] is null then null else
 cast([PROV Written Notif Date - EXPEDITED EXTENSION]	as datetime) + cast([PROV Written Notif Time - EXPEDITED EXTENSION]	as datetime) end Exp_Ext_Prov_Written,
------#-----/* Ex Non Par */
 [PROV Verbal/ Fax Req Date - EXPEDITED NON PAR PROV MORE INFO] Exp_NonPar_Prov_Date,
 [PROV Verbal/ Fax Req Time - EXPEDITED NON PAR PROV MORE INFO] Exp_NonPar_Prov_Time,
 case when [PROV Verbal/ Fax Req Date - EXPEDITED NON PAR PROV MORE INFO] is null or [PROV Verbal/ Fax Req Time - EXPEDITED NON PAR PROV MORE INFO] is null then null else
 cast([PROV Verbal/ Fax Req Date - EXPEDITED NON PAR PROV MORE INFO]	as datetime) + cast([PROV Verbal/ Fax Req Time - EXPEDITED NON PAR PROV MORE INFO]	as datetime) end Exp_NonPar_Prov ,
------#-----/* Standard Approval */
 [Auth Receipt Date - STANDARD APPROVAL] Std_Appr_Auth_Receipt_Date,
 [Auth Receipt Time - STANDARD APPROVAL] Std_Appr_Auth_Receipt_Time,
 cast([Auth Receipt Date - STANDARD APPROVAL]	as datetime) + cast([Auth Receipt Time - STANDARD APPROVAL]	as datetime) 	Std_Appr_Auth_Receipt	,
@@ -767,7 +794,6 @@ cast([MBR Written Notif Date - STANDARD APPROVAL] as datetime) + cast([MBR Writt
 [PROV Notif Date - STANDARD APPROVAL]				Std_Appr_Prov	,
 [PROV Notif Time - STANDARD APPROVAL]				Std_Appr_Prov_Time	,
 cast([PROV Notif Date - STANDARD APPROVAL] as datetime) + cast([PROV Notif Time - STANDARD APPROVAL] as datetime)	Std_Appr_Prov_Datetime	,
------#-----/* Standard Denial */
 [Auth Receipt Date - STANDARD DENIAL] Std_Deny_Auth_Receipt_Date,
 [Auth Receipt Time - STANDARD DENIAL] Std_Deny_Auth_Receipt_Time,
 cast([Auth Receipt Date - STANDARD DENIAL]	as datetime) + cast([Auth Receipt Time - STANDARD DENIAL]	as datetime)  Std_Deny_Auth_Receipt,
@@ -789,7 +815,6 @@ cast([PROV Notif Date - STANDARD DENIAL] as datetime) + cast([PROV Notif Time - 
 [PROV Written Notif Date - STANDARD DENIAL]				Std_Deny_Prov_Written,
 [PROV Written Notif Time - STANDARD DENIAL]				Std_Deny_Prov_Written_Time,
 cast([PROV Written Notif Date - STANDARD DENIAL] as datetime) + cast([PROV Written Notif Time - STANDARD DENIAL] as datetime)	Std_Deny_Prov_Written_Datetime,
------#-----/* Standard Extension */
 [Auth Receipt Date - STANDARD EXTENSION] as Std_Ext_Auth_Receipt_Date,
 [Auth Receipt Time - STANDARD EXTENSION] as Std_Ext_Auth_Receipt_Time,
 cast([Auth Receipt Date - STANDARD EXTENSION]	as datetime) + cast([Auth Receipt Time - STANDARD EXTENSION]	as datetime)  Std_Ext_Auth_Receipt	,
@@ -807,66 +832,50 @@ cast([Decision Date - STANDARD EXTENSION]	as datetime) + cast([Decision Time - S
 , case when acuity = 'urgent' then [# of Extension Days - EXPEDITED EXTENSION]			
 when acuity = 'elective' then [# of Extension Days - STANDARD EXTENSION] end Extension_Days	
 ,[Extension - No Group] Extension_Date
-into sheiladb.dbo.DARR_Attributes_For_Calc from #DARR_Attributes_For_Calc a
+into sheiladb.dbo.DARR_Attributes_For_Calc from #DARR_Attributes_For_Calc a  (nolock) 
 
 update sheiladb.dbo.DARR_Attributes_For_Calc
-set [Auth Receipt Date - EXPEDITED APPROVAL]=cast(receiptdate as date),[Auth Receipt Time - EXPEDITED APPROVAL]=cast(receiptdate as time)
-where dbname = 'IL' and receiptdate >= '2019-10-05' and receiptdate < '2020-05-01' and acuity = 'urgent' and (authstatus = 'APPROVED' or partial = 'Y')
-update sheiladb.dbo.DARR_Attributes_For_Calc
-set [Auth Receipt Date - EXPEDITED DENIAL]=cast(receiptdate as date),[Auth Receipt Time - EXPEDITED DENIAL]=cast(receiptdate as time)
-where dbname = 'IL' and receiptdate >= '2019-10-05' and receiptdate < '2020-05-01' and acuity = 'urgent' and (authstatus = 'DENIED' or partial = 'Y' or Effective_Denial = 'Y')
-update sheiladb.dbo.DARR_Attributes_For_Calc
-set [Auth Receipt Date - STANDARD APPROVAL]=cast(receiptdate as date),[Auth Receipt Time - STANDARD APPROVAL]=cast(receiptdate as time)
-where dbname = 'IL' and receiptdate >= '2019-10-05' and receiptdate < '2020-05-01' and acuity = 'elective' and (authstatus = 'APPROVED' or partial = 'Y')
-update sheiladb.dbo.DARR_Attributes_For_Calc
-set [Auth Receipt Date - STANDARD DENIAL]=cast(receiptdate as date),[Auth Receipt Time - STANDARD DENIAL]=cast(receiptdate as time)
-where dbname = 'IL' and receiptdate >= '2019-10-05' and receiptdate < '2020-05-01' and acuity = 'elective' and (authstatus = 'DENIED' or partial = 'Y' or Effective_Denial = 'Y')
-update sheiladb.dbo.DARR_Attributes_For_Calc
-set [Auth Receipt Date - EXPEDITED EXTENSION]=cast(receiptdate as date),[Auth Receipt Time - EXPEDITED EXTENSION]=cast(receiptdate as time)
-where dbname = 'IL' and receiptdate >= '2019-10-05' and receiptdate < '2020-05-01' and acuity = 'urgent' and ext=1
-update sheiladb.dbo.DARR_Attributes_For_Calc
-set [Auth Receipt Date - STANDARD EXTENSION]=cast(receiptdate as date),[Auth Receipt Time - STANDARD EXTENSION]=cast(receiptdate as time)
-where dbname = 'IL' and receiptdate >= '2019-10-05' and receiptdate < '2020-05-01' and acuity = 'urgent' and ext=1
---[Auth Receipt Date - EXPEDITED CRITERIA NOT MET],[Auth Receipt Time - EXPEDITED CRITERIA NOT MET],
+set Exp_Appr_Mbr_Written_Time = cast(Exp_Appr_Mbr_Written as time),Exp_Appr_Mbr_Written_Date = cast(Exp_Appr_Mbr_Written as date)
+,Exp_Deny_Mbr_Written_Time = cast(Exp_Deny_Mbr_Written as time),Exp_Deny_Mbr_Written_Date = cast(Exp_Deny_Mbr_Written as date)
+,Exp_Crit_Mbr_Written_Time = cast(Exp_Crit_Mbr_Written as time),Exp_Crit_Mbr_Written_Date = cast(Exp_Crit_Mbr_Written as date)
+,Exp_Ext_Mbr_Written_Time = cast(Exp_Ext_Mbr_Written as time),Exp_Ext_Mbr_Written_Date = cast(Exp_Ext_Mbr_Written as date)
 
 if object_id('sheiladb.dbo.DARR_Misc_Attr') is not null drop table sheiladb.dbo.DARR_Misc_Attr
 select distinct a.referralid, a.dbname, b.date_value TOC_DC_Ord_to_PCP, c.date_value TOC_Verified_Fac, d.date_value TOC_Verified_DC_Plan_Sent,e.date_value TOC_Appr_Ed_to_Prov
 , f.date_value TOC_Appr_ED_to_Mem, g.date_value TOC_Notif_Emergent_Admit,h.date_value Modified_Serv_Req, i.date_value Modified_Serv, t.thevalue Retro_Review
 , hh.thevalue HH_Cont_Servs
-into sheiladb.dbo.DARR_Misc_Attr from sheiladb.dbo.DARR_Inclusion a 
-left join sheiladb.dbo.DARR_Date b on b.referralid = a.referralid and b.dbname = a.dbname and b.description = 'ToC – Discharge Orders or Summary sent to PCP'
-left join sheiladb.dbo.DARR_Date c on c.referralid = a.referralid and c.dbname = a.dbname and c.description = 'TOC – Verified Facility notified Member of Discharge'
-left join sheiladb.dbo.DARR_Date d on d.referralid = a.referralid and d.dbname = a.dbname and d.description = 'ToC – Verified Discharge Plan sent to Receiving Provider'
-left join sheiladb.dbo.DARR_Date e on e.referralid = a.referralid and e.dbname = a.dbname and e.description = 'ToC - Approval, Preadmit Education faxed to Requested Prov'
-left join sheiladb.dbo.DARR_Date f on f.referralid = a.referralid and f.dbname = a.dbname and f.description = 'ToC – Approval, Preadmit Education & PHR sent to Mbr'
-left join sheiladb.dbo.DARR_Date g on g.referralid = a.referralid and g.dbname = a.dbname and g.description = 'ToC – Notification of Emergent Admission sent to PCP'
-left join sheiladb.dbo.DARR_Date h on h.referralid = a.referralid and h.dbname = a.dbname and h.description = 'MODIFIED SERVICE REQUEST'
-left join sheiladb.dbo.DARR_Date i on i.referralid = a.referralid and i.dbname = a.dbname and i.description = 'Modified Service'
-left join sheiladb.dbo.DARR_Text_Range t on t.referralid = a.referralid and t.dbname = a.dbname and t.description = 'Retro Review'
-left join sheiladb.dbo.DARR_Text_Range hh on hh.referralid = a.referralid and hh.dbname = a.dbname and hh.description = 'HH Continued Services'
+into sheiladb.dbo.DARR_Misc_Attr from sheiladb.dbo.DARR_Inclusion a  (nolock)
+left join sheiladb.dbo.DARR_Date  (nolock) b on b.referralid = a.referralid and b.dbname = a.dbname and b.description = 'ToC – Discharge Orders or Summary sent to PCP'
+left join sheiladb.dbo.DARR_Date (nolock)  c on c.referralid = a.referralid and c.dbname = a.dbname and c.description = 'TOC – Verified Facility notified Member of Discharge'
+left join sheiladb.dbo.DARR_Date (nolock)  d on d.referralid = a.referralid and d.dbname = a.dbname and d.description = 'ToC – Verified Discharge Plan sent to Receiving Provider'
+left join sheiladb.dbo.DARR_Date (nolock)  e on e.referralid = a.referralid and e.dbname = a.dbname and e.description = 'ToC - Approval, Preadmit Education faxed to Requested Prov'
+left join sheiladb.dbo.DARR_Date (nolock)  f on f.referralid = a.referralid and f.dbname = a.dbname and f.description = 'ToC – Approval, Preadmit Education & PHR sent to Mbr'
+left join sheiladb.dbo.DARR_Date (nolock)  g on g.referralid = a.referralid and g.dbname = a.dbname and g.description = 'ToC – Notification of Emergent Admission sent to PCP'
+left join sheiladb.dbo.DARR_Date (nolock)  h on h.referralid = a.referralid and h.dbname = a.dbname and h.description = 'MODIFIED SERVICE REQUEST'
+left join sheiladb.dbo.DARR_Date (nolock)  i on i.referralid = a.referralid and i.dbname = a.dbname and i.description = 'Modified Service'
+left join sheiladb.dbo.DARR_Text_Range (nolock)  t on t.referralid = a.referralid and t.dbname = a.dbname and t.description = 'Retro Review'
+left join sheiladb.dbo.DARR_Text_Range (nolock)  hh on hh.referralid = a.referralid and hh.dbname = a.dbname and hh.description = 'HH Continued Services'
 where b.referralid is not null or c.referralid is not null or d.referralid is not null or e.referralid is not null or f.referralid is not null or g.referralid is not null
 or h.referralid is not null or i.referralid is not null or t.referralid is not null or hh.referralid is not null
 
---calc tat IP admit decision 
-if object_id('sheiladb.dbo.DARR_IPDates') is not null drop table sheiladb.dbo.DARR_IPDates
+if object_id('sheiladb.dbo.DARR_IPDates') is not null drop table sheiladb.dbo.DARR_IPDates 
 select a.dbname db, a.referralid ref_id, a.authorizationid auth_id, ir.IP_Auth_Receipt, id.IP_Decision
-into sheiladb.dbo.DARR_IPDates from sheiladb.dbo.DARR_Inclusion a
+into sheiladb.dbo.DARR_IPDates from sheiladb.dbo.DARR_Inclusion a  (nolock)
 left join
 (select distinct b.dbname, b.referralid, b.authorizationid, case when b.date_value is not null and c.time_value is not null then cast(b.date_value as datetime) + cast(c.time_value as datetime) end IP_Auth_Receipt, b.thegroup
-	from sheiladb.dbo.DARR_Inclusion a 
-	join sheiladb.dbo.DARR_Date b on b.referralid = a.referralid and a.dbname = b.dbname and b.description = 'Auth Receipt Date' and b.thegroup in ('No Group','')
-	join sheiladb.dbo.DARR_Time c on c.referralid = a.referralid and c.dbname = a.dbname and c.description = 'Auth Receipt Time' and c.thegroup in ('No Group','')
+	from sheiladb.dbo.DARR_Inclusion a  (nolock)
+	join sheiladb.dbo.DARR_Date  (nolock) b on b.referralid = a.referralid and a.dbname = b.dbname and b.description = 'Auth Receipt Date' and b.thegroup in ('No Group','')
+	join sheiladb.dbo.DARR_Time  (nolock) c on c.referralid = a.referralid and c.dbname = a.dbname and c.description = 'Auth Receipt Time' and c.thegroup in ('No Group','')
 	where a.acuity = 'emergency') ir on ir.referralid = a.referralid and ir.dbname = a.dbname
 left join
 (select distinct b.dbname, b.referralid, b.authorizationid,  case when b.date_value is not null and c.time_value is not null then cast(b.date_value as datetime) + cast(c.time_value as datetime) end IP_Decision, b.thegroup
-	from sheiladb.dbo.DARR_Inclusion a 
-	join sheiladb.dbo.DARR_Date b on b.referralid = a.referralid and a.dbname = b.dbname and b.description = 'Decision Date'  and b.thegroup in ('No Group','')
-	join sheiladb.dbo.DARR_Time c on c.referralid = a.referralid and c.dbname = a.dbname and c.description = 'Decision Time'  and c.thegroup in ('No Group','')
+	from sheiladb.dbo.DARR_Inclusion a  (nolock)
+	join sheiladb.dbo.DARR_Date  (nolock) b on b.referralid = a.referralid and a.dbname = b.dbname and b.description = 'Decision Date'  and b.thegroup in ('No Group','')
+	join sheiladb.dbo.DARR_Time  (nolock) c on c.referralid = a.referralid and c.dbname = a.dbname and c.description = 'Decision Time'  and c.thegroup in ('No Group','')
 	where a.acuity = 'emergency') id on id.referralid = a.referralid and id.dbname = a.dbname
 where a.acuity = 'emergency'
 
---Calculate TAT
-if object_id('sheiladb.dbo.DARR_Calc') is not null drop table sheiladb.dbo.DARR_Calc  
+if object_id('sheiladb.dbo.DARR_Calc') is not null drop table sheiladb.dbo.DARR_Calc 
 select distinct c.*, std_app_attr, exp_app_attr, std_den_attr, exp_den_attr
 , Part_B = case when ((receiptdate >= '2020-01-01' and receiptdate <> '2078-12-31') or Exp_Appr_Auth_Receipt >= '2020-01-01' or Exp_Deny_Auth_Receipt >= '2020-01-01'
 or Std_Appr_Auth_Receipt >= '2020-01-01' or Std_Deny_Auth_Receipt >= '2020-01-01')
@@ -979,7 +988,7 @@ TAT_Exp_Deny_Prov_HH = case when Exp_Deny_Auth_Receipt is not null and Exp_Deny_
 TAT_Exp_Deny_Prov_Written_DD = case when Exp_Deny_Auth_Receipt is not null and Exp_Deny_Prov_Written is not null
 	then datediff(hh,Exp_Deny_Auth_Receipt,Exp_Deny_Prov_Written)/24.00 end,
 TAT_Exp_Deny_Prov_Written_HH = case when Exp_Deny_Auth_Receipt is not null and Exp_Deny_Prov_Written is not null
-	then datediff(hh,Exp_Deny_Auth_Receipt,Exp_Deny_Prov_Written)/60.00 end,
+	then datediff(mi,Exp_Deny_Auth_Receipt,Exp_Deny_Prov_Written)/60.00 end,
 TAT_Exp_Ext_Mbr_Verbal_DD = case when Exp_Ext_Auth_Receipt is not null and Exp_Ext_Mbr_Verbal is not null
 	then datediff(hh,Exp_Ext_Auth_Receipt,Exp_Ext_Mbr_Verbal)/24.00 end,
 TAT_Exp_Ext_Mbr_Verbal_HH = case when Exp_Ext_Auth_Receipt is not null and Exp_Ext_Mbr_Verbal is not null
@@ -989,9 +998,9 @@ TAT_Exp_Ext_Mbr_Written_DD	= case when Exp_Ext_Auth_Receipt is not null and Exp_
 TAT_Exp_Ext_Mbr_Written_HH	= case when Exp_Ext_Auth_Receipt is not null and Exp_Ext_Mbr_Written is not null 
 	then datediff(mi,Exp_Ext_Auth_Receipt,Exp_Ext_Mbr_Written)/60.00 end,
 TAT_Exp_Ext_Prov_DD = case when Exp_Ext_Auth_Receipt is not null and Exp_Ext_Prov is not null 
-	then datediff(hh,Exp_Ext_Auth_Receipt,Exp_Ext_Prov)/60.00 end,
+	then datediff(hh,Exp_Ext_Auth_Receipt,Exp_Ext_Prov)/24.00 end,
 TAT_Exp_Ext_Prov_HH = case when Exp_Ext_Auth_Receipt is not null and Exp_Ext_Prov is not null 
-	then datediff(mi,Exp_Ext_Auth_Receipt,Exp_Ext_Prov)/24.00 end,
+	then datediff(mi,Exp_Ext_Auth_Receipt,Exp_Ext_Prov)/60.00 end,
 TAT_Exp_Ext_Prov_Written_DD = case when Exp_Ext_Auth_Receipt is not null and Exp_Ext_Prov_Written is not null 
 	then datediff(hh,Exp_Ext_Auth_Receipt,Exp_Ext_Prov_Written)/24.00 end,
 TAT_Exp_Ext_Prov_Written_HH = case when Exp_Ext_Auth_Receipt is not null and Exp_Ext_Prov_Written is not null 
@@ -1001,13 +1010,13 @@ TAT_Exp_NonPar_Prov_HH	= case when Match_Auth_Receipt is not null and Exp_NonPar
 TAT_Exp_NonPar_Prov_DD	= case when Match_Auth_Receipt is not null and Exp_NonPar_Prov is not null 
 	then datediff(hh,Match_Auth_Receipt,Exp_NonPar_Prov)/24.00 end
 ,IP_Auth_Receipt,IP_Decision
-, floor(datediff(mi,d.IP_Auth_Receipt, d.IP_Decision)/60.0) IP_TAT_Hours, floor(datediff(hh,d.IP_Auth_Receipt,d.IP_Decision)/24.00) IP_TAT_Days
+, datediff(mi,d.IP_Auth_Receipt, d.IP_Decision)/60.0 IP_TAT_Hours, datediff(hh,d.IP_Auth_Receipt,d.IP_Decision)/24.00 IP_TAT_Days
 into sheiladb.dbo.DARR_Calc 
-from sheiladb.dbo.DARR_Attributes_For_Calc c 
-left join sheiladb.dbo.DARR_IPDates d on d.ref_id = c.referralid and d.db = c.dbname
-left join (select distinct dbname db, referralid ref, effective_denial, std_app_attr, exp_app_attr, std_den_attr, exp_den_attr from sheiladb.dbo.DARR_Appeal_Mod)
+from sheiladb.dbo.DARR_Attributes_For_Calc c  (nolock)
+left join sheiladb.dbo.DARR_IPDates (nolock)  d on d.ref_id = c.referralid and d.db = c.dbname
+left join (select distinct dbname db, referralid ref, effective_denial, std_app_attr, exp_app_attr, std_den_attr, exp_den_attr from sheiladb.dbo.DARR_Appeal_Mod  (nolock))
 	 am on am.ref = c.referralid and am.db = c.dbname
-	 
+
 update sheiladb.dbo.DARR_Calc 
 set TAT_Std_Deny_Prov_Written_DD = TAT_Std_Deny_Mbr_Written_DD
 , TAT_Std_Deny_Prov_Written_HH = TAT_Std_Deny_Mbr_Written_HH
@@ -1017,13 +1026,12 @@ set TAT_Std_Deny_Prov_Written_DD = TAT_Std_Deny_Mbr_Written_DD
 where Std_Deny_Prov_Written is null and std_deny_mbr_written is not null and acuity = 'elective' 
 and (authstatus = 'DENIED' or partial = 'y'  or Effective_Denial = 'Y')
 
---Prime Field
 if object_id('tempdb..#t1') is not null drop table #t1
 select distinct i.authorizationid, i.referralid, i.dbname,d.thevalue thevalued,d.description descriptiond,d.thegroup thegroupd,t.thevalue thevaluet,t.description descriptiont,t.thegroup thegroupt,d.date_value,t.time_value
 ,Date_Time_Value = case when date_value is not null and time_value is not null then cast(date_value as datetime)+cast(time_value as datetime) when date_value is not null then cast(date_value as datetime) end
-,Field = rtrim(ltrim(replace(d.description, 'date',''))) into #t1 from sheiladb.dbo.DARR_Inclusion i 
-left join sheiladb.dbo.DARR_Date d on i.referralid = d.referralid and i.dbname = d.dbname
-left join sheiladb.dbo.DARR_Time t on i.referralid = t.referralid and i.dbname = t.dbname and d.thegroup = t.thegroup 
+,Field = rtrim(ltrim(replace(d.description, 'date',''))) into #t1 from sheiladb.dbo.DARR_Inclusion i  (nolock)
+left join sheiladb.dbo.DARR_Date (nolock)  d on i.referralid = d.referralid and i.dbname = d.dbname
+left join sheiladb.dbo.DARR_Time  (nolock) t on i.referralid = t.referralid and i.dbname = t.dbname and d.thegroup = t.thegroup 
 	and rtrim(ltrim(replace(d.description, 'date',''))) = rtrim(ltrim(replace(t.description, 'time','')))
 
 if Object_ID('tempdb..#t2') is not null drop table #t2 
@@ -1034,112 +1042,121 @@ select distinct b.authorizationid, b.ReferralID, b.DBname, a.thegroupd TheGroup,
 , case when b.field in ('MBR Written Notif','PROV Written Notif') and cast(b.Date_Time_Value as time) > '15:45' then cast(b.date_value as datetime) + cast('23:59' as datetime) + 1 
 when b.field in ('MBR Written Notif','PROV Written Notif') and cou.referralid is null then cast(b.date_value as datetime) + cast('23:59' as datetime) else b.Date_Time_Value end as Field_DateTime
 , df.day_name Field_Weekday, df.is_workday Field_Workday, case when df.is_workday=0 then sheiladb.dbo.fn_priorBusinessDay(b.date_value) else b.date_value end Biz_Field
-into #t2 from #t1 a join #t1 b on a.referralid = b.referralid and a.dbname = b.dbname and a.thegroupd = b.thegroupd
-join sheiladb.dbo.date_reference dr on dr.calendar_date = a.date_value join sheiladb.dbo.date_reference df on df.calendar_date = b.date_value 
-left join (select distinct referralid, dbname, thegroup, thevalue from sheiladb.dbo.DARR_Text_Range where description = 'Tracking #' and thevalue like '%cou%') cou on cou.referralid = a.referralid and cou.dbname = a.dbname and cou.thegroup = b.thegroupd
+into #t2 from #t1 a  (nolock) join #t1 b on a.referralid = b.referralid and a.dbname = b.dbname and a.thegroupd = b.thegroupd
+join sheiladb.dbo.date_reference  (nolock) dr on dr.calendar_date = a.date_value 
+join sheiladb.dbo.date_reference  (nolock) df on df.calendar_date = b.date_value 
+left join (select distinct referralid, dbname, thegroup, thevalue from sheiladb.dbo.DARR_Text_Range (nolock) where description = 'Tracking #' and thevalue like '%cou%') cou on cou.referralid = a.referralid and cou.dbname = a.dbname and cou.thegroup = b.thegroupd
 where a.Field = 'Auth Receipt' and b.Field <> 'Auth Receipt'
 update #t2 set Field_Date = cast(field_datetime as date)
 
 if Object_ID('tempdb..#t3') is not null drop table #t3 select * ,datediff(mi,auth_rec_datetime,Field_DateTime)/60.0 TAT_HH ,datediff(hh,auth_rec_datetime,Field_DateTime)/24.0 TAT_DD
-,case when Biz_Receipt=Biz_Field then '0' else (select sum(is_workday) from sheiladb.dbo.date_reference where calendar_date > Biz_Receipt and calendar_date <= Biz_Field) end TAT_Biz into #t3 from #t2 
+,case when Biz_Receipt=Biz_Field then '0' else (select sum(is_workday) from sheiladb.dbo.date_reference (nolock) where calendar_date > Biz_Receipt and calendar_date <= Biz_Field) end TAT_Biz into #t3 from #t2 
 if object_Id('sheiladb.dbo.DARR_BizDay') is not null drop table sheiladb.dbo.DARR_BizDay
-select * into sheiladb.dbo.DARR_BizDay from #t3
+select * into sheiladb.dbo.DARR_BizDay from #t3 (nolock)
 
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Appr_Decision_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Appr_Decision_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED APPROVAL' and b.Field = 'Decision'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Deny_Decision_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Deny_Decision_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED DENIAL' and b.Field = 'Decision'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Ext_Decision_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Ext_Decision_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED EXTENSION' and b.Field = 'Decision'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Std_Appr_Decision_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Std_Appr_Decision_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'STANDARD APPROVAL' and b.Field = 'Decision'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Std_Deny_Decision_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Std_Deny_Decision_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'STANDARD DENIAL' and b.Field = 'Decision'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Std_Ext_Decision_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Std_Ext_Decision_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'STANDARD EXTENSION' and b.Field = 'Decision'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Appr_Mbr_Verbal_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Appr_Mbr_Verbal_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED APPROVAL' and b.Field = 'MBR Verbal Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Appr_Mbr_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Appr_Mbr_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED APPROVAL' and b.Field = 'MBR Written Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Appr_Prov_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Appr_Prov_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED APPROVAL' and b.Field = 'PROV Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Deny_Mbr_Verbal_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Deny_Mbr_Verbal_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED DENIAL' and b.Field = 'MBR Verbal Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Deny_Mbr_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Deny_Mbr_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED DENIAL' and b.Field = 'MBR Written Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Deny_Prov_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Deny_Prov_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED DENIAL' and b.Field = 'PROV Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Deny_Prov_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Deny_Prov_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED DENIAL' and b.Field = 'PROV Written Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Ext_Mbr_Verbal_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Ext_Mbr_Verbal_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED EXTENSION' and b.Field = 'MBR Verbal Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Ext_Mbr_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Ext_Mbr_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED EXTENSION' and b.Field = 'MBR Written Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Ext_Prov_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Ext_Prov_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED EXTENSION' and b.Field = 'PROV Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Ext_Prov_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Ext_Prov_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED EXTENSION' and b.Field = 'PROV Written Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Crit_Decision_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Crit_Decision_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED CRITERIA NOT MET' and b.Field = 'Decision Date'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Crit_Mbr_Verbal_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Crit_Mbr_Verbal_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED CRITERIA NOT MET' and b.Field = 'Mbr Verbal Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Crit_Mbr_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Crit_Mbr_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED CRITERIA NOT MET' and b.Field = 'Mbr Written Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Crit_Prov_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Crit_Prov_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED CRITERIA NOT MET' and b.Field = 'Prov Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Exp_Crit_Prov_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Exp_Crit_Prov_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'EXPEDITED CRITERIA NOT MET' and b.Field = 'Prov Written Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Std_Appr_Mbr_Verbal_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Std_Appr_Mbr_Verbal_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'STANDARD APPROVAL' and b.Field = 'MBR Verbal Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Std_Appr_Mbr_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Std_Appr_Mbr_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'STANDARD APPROVAL' and b.Field = 'MBR Written Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Std_Appr_Prov_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Std_Appr_Prov_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'STANDARD APPROVAL' and b.Field = 'PROV Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Std_Deny_Mbr_Verbal_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Std_Deny_Mbr_Verbal_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'STANDARD DENIAL' and b.Field = 'MBR Verbal Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Std_Deny_Mbr_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Std_Deny_Mbr_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'STANDARD DENIAL' and b.Field = 'MBR Written Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Std_Deny_Prov_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Std_Deny_Prov_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'STANDARD DENIAL' and b.Field = 'PROV Notif'
 update sheiladb.dbo.DARR_Calc 
-set TAT_Std_Deny_Prov_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
+set TAT_Std_Deny_Prov_Written_DD = b.TAT_Biz from sheiladb.dbo.DARR_Calc c (nolock) join sheiladb.dbo.DARR_BizDay b on c.referralid = b.referralid and c.dbname = b.dbname
 where c.dbname = 'TX' and b.thegroup = 'STANDARD DENIAL' and b.Field = 'PROV Written Notif'
---,TAT_Std_Ext_Mbr_Verbal_DD,TAT_Std_Ext_Mbr_Written_DD,TAT_Std_Ext_Prov_DD,TAT_Std_Ext_Prov_Written_DD
 
 update sheiladb.dbo.DARR_Calc
 set TAT_Exp_Deny_Mbr_Written_DD = case when Exp_Deny_Mbr_Verbal is not null and Exp_Deny_Mbr_Written is not null and Exp_Deny_Mbr_Verbal <= Exp_Deny_Mbr_Written
-	then datediff(hh,Exp_Deny_Mbr_Verbal,Exp_Deny_Mbr_Written)/24.00 end
-	where TAT_Exp_Deny_Mbr_Verbal_HH <= 72 and TAT_Exp_Deny_Mbr_Verbal_HH >= 0 and dbname not in ('TX','OH') and ext is null
+then datediff(hh,Exp_Deny_Mbr_Verbal_Date,Exp_Deny_Mbr_Written_Date)/24.00 end
+, Exp_Deny_Mbr_Written = Exp_Deny_Mbr_Written_Raw
+, Exp_Deny_Mbr_Written_Time = cast(Exp_Deny_Mbr_Written_Raw as time)
+where TAT_Exp_Deny_Mbr_Verbal_HH <= 72 and TAT_Exp_Deny_Mbr_Verbal_HH >= 0 and dbname not in ('TX','OH') and ext is null
 
-if object_id('sheiladb.dbo.DARR_Compliance') is not null drop table sheiladb.dbo.DARR_Compliance
+update sheiladb.dbo.DARR_Calc
+set TAT_Exp_Deny_prov_Written_DD = case when Exp_Deny_Mbr_Verbal_Date is not null and Exp_Deny_prov_Written is not null and Exp_Deny_Mbr_Verbal_Date <= Exp_Deny_prov_Written
+	then datediff(hh,Exp_Deny_Mbr_Verbal_Date,Exp_Deny_Prov_Written_Date)/24.00 end
+	where TAT_Exp_Deny_prov_HH <= 72 and TAT_Exp_Deny_prov_HH >= 0 and dbname not in ('TX','OH') and ext is null
+
+
+	--select top 10 * from sheiladb.dbo.darr_compliance where dbname = 'tx' and acuity = 'standard'
+if object_id('sheiladb.dbo.DARR_Compliance') is not null drop table sheiladb.dbo.DARR_Compliance 
 select distinct *
 ,Compliant_Exp_Appr_Decision = case when ext = '1' and TAT_Exp_Appr_Decision_DD <=17 and TAT_Exp_Appr_Decision_DD >= 0 then 'Y' 
 when ext = '1' and TAT_Exp_Appr_Decision_DD >17 then 'N' when TAT_Exp_Appr_Decision_HH <=72 and TAT_Exp_Appr_Decision_HH >= 0 then 'Y' when TAT_Exp_Appr_Decision_HH >72 then 'N' end
@@ -1151,7 +1168,7 @@ when TAT_Exp_Appr_Mbr_Written_HH <=72 and TAT_Exp_Appr_Mbr_Written_HH >=0 then '
 when TAT_Exp_Appr_Prov_HH <=72 and TAT_Exp_Appr_Prov_HH >=0 then 'Y' when TAT_Exp_Appr_Prov_HH >72 then 'N' end
 , Compliant_Exp_Deny_Decision = case when ext = '1' and TAT_Exp_Deny_Decision_DD <=17 and TAT_Exp_Deny_Decision_DD >=0 then 'Y' when ext = '1' and TAT_Exp_Deny_Decision_DD >17 then 'N' 
  when TAT_Exp_Deny_Decision_HH <=72 and TAT_Exp_Deny_Decision_HH>=0 then 'Y' when TAT_Exp_Deny_Decision_HH >72 then 'N' end
- , Compliant_Exp_Deny_Mbr_Verbal = case when ext = '1' and TAT_Exp_Deny_Mbr_Verbal_DD <=17 and TAT_Exp_Deny_Mbr_Verbal_DD >= 0 then 'Y' when ext = '1' and TAT_Exp_Deny_Mbr_Verbal_DD >17 then 'N' 
+, Compliant_Exp_Deny_Mbr_Verbal = case when ext = '1' and TAT_Exp_Deny_Mbr_Verbal_DD <=17 and TAT_Exp_Deny_Mbr_Verbal_DD >= 0 then 'Y' when ext = '1' and TAT_Exp_Deny_Mbr_Verbal_DD >17 then 'N' 
  when TAT_Exp_Deny_Mbr_Verbal_HH <=72 and TAT_Exp_Deny_Mbr_Verbal_HH>=0 then 'Y' when TAT_Exp_Deny_Mbr_Verbal_HH >72 then 'N' end
 , Compliant_Exp_Deny_Mbr_Written = case when ext = '1' and TAT_Exp_Deny_Mbr_Written_DD <=17 and TAT_Exp_Deny_Mbr_Written_DD>=0 then 'Y' 
 when ext = '1' and TAT_Exp_Deny_Mbr_Written_DD >17 then 'N' 
@@ -1160,8 +1177,11 @@ when TAT_Exp_Deny_Mbr_Verbal_HH <=72 and TAT_Exp_Deny_Mbr_Verbal_HH >=0 and TAT_
 when TAT_Exp_Deny_Mbr_Written_HH <=72 and TAT_Exp_Deny_Mbr_Written_HH >=0 then 'Y' when TAT_Exp_Deny_Mbr_Written_HH >72 then 'N' end
 ,Compliant_Exp_Deny_Prov = case when ext = '1' and TAT_Exp_Deny_Prov_DD <=17 and TAT_Exp_Deny_Prov_DD>=0 then 'Y' when ext = '1' and TAT_Exp_Deny_Prov_DD >17 then 'N' 
 when TAT_Exp_Deny_Prov_HH <=72 and TAT_Exp_Deny_Prov_HH>=0 then 'Y' when TAT_Exp_Deny_Prov_HH >72 then 'N' end
-,Compliant_Exp_Deny_Prov_Written = case when ext = '1' and TAT_Exp_Deny_Prov_Written_DD <=17 and TAT_Exp_Deny_Prov_Written_DD>=0 then 'Y' when ext = '1' and TAT_Exp_Deny_Prov_Written_DD >17 then 'N' 
-when TAT_Exp_Deny_Prov_Written_HH <=72 and TAT_Exp_Deny_Prov_Written_HH>=0 then 'Y' when TAT_Exp_Deny_Prov_Written_HH >72 then 'N' end
+, Compliant_Exp_Deny_Prov_Written = case when ext = '1' and TAT_Exp_Deny_Prov_Written_DD <=17 and TAT_Exp_Deny_Prov_Written_DD>=0 then 'Y' 
+when ext = '1' and TAT_Exp_Deny_Prov_Written_DD >17 then 'N' 
+when TAT_Exp_Deny_Mbr_Verbal_HH <=72 and TAT_Exp_Deny_Mbr_Verbal_HH >=0 and TAT_Exp_Deny_Prov_Written_DD between 0 and 3 then 'Y'
+when TAT_Exp_Deny_Mbr_Verbal_HH <=72 and TAT_Exp_Deny_Mbr_Verbal_HH >=0 and TAT_Exp_Deny_Prov_Written_DD >3 then 'N'
+when TAT_Exp_Deny_Prov_Written_HH <=72 and TAT_Exp_Deny_Prov_Written_HH >=0 then 'Y' when TAT_Exp_Deny_Prov_Written_HH >72 then 'N' end
 ,Compliant_Exp_Ext_Decision = case when ext = '1' and TAT_Exp_Ext_Decision_DD <=17 and TAT_Exp_Ext_Decision_DD>=0 then 'Y' when ext = '1' and TAT_Exp_Ext_Decision_DD >17 then 'N' 
  when TAT_Exp_Ext_Decision_HH <=72 and TAT_Exp_Ext_Decision_HH>=0 then 'Y' when TAT_Exp_Ext_Decision_HH >72 then 'N' end
 ,Compliant_Exp_Ext_Mbr_Verbal = case when TAT_Exp_Ext_Mbr_Verbal_HH <=72 and TAT_Exp_Ext_Mbr_Verbal_HH>=0 then 'Y' when TAT_Exp_Ext_Mbr_Verbal_HH> 72 then 'N' end
@@ -1207,12 +1227,10 @@ when ext = '1' and TAT_Std_Appr_Mbr_Verbal_DD >28 then 'N'
 ,IP_Compliant= case when IP_Auth_Receipt is null or IP_Decision is null or datediff(mi,IP_Auth_Receipt,IP_Decision)/60.0 < 0 then null 
 	when floor(datediff(mi,IP_Auth_Receipt,IP_Decision)/60.0) < 73 then 'Y' else 'N' end 
 into sheiladb.dbo.DARR_Compliance
-from sheiladb.dbo.DARR_Calc
+from sheiladb.dbo.DARR_Calc (nolock)
 
---tx mmp
 update sheiladb.dbo.DARR_Compliance
-set 
-Compliant_Exp_Appr_Decision = case when TAT_Exp_Appr_Decision_DD is null or TAT_Exp_Appr_Decision_DD < 0 then null
+set Compliant_Exp_Appr_Decision = case when TAT_Exp_Appr_Decision_DD is null or TAT_Exp_Appr_Decision_DD < 0 then null
 when datepart(dw,exp_appr_auth_receipt)=6 and exp_appr_auth_receipt >= '2019-01-01' and TAT_Exp_Appr_Decision_HH <= 72 and TAT_Exp_Appr_Decision_HH>=0 then 'Y' 
 when datepart(dw,exp_appr_auth_receipt)=6 and exp_appr_auth_receipt >= '2019-01-01' and TAT_Exp_Appr_Decision_HH > 72 then 'N' 
 when TAT_Exp_Appr_Decision_DD <= 1 then 'Y' when TAT_Exp_Appr_Decision_DD > 1 then 'N' end
@@ -1302,7 +1320,6 @@ when TAT_Std_Ext_Prov_DD <= 3 then 'Y' when TAT_Std_Ext_Prov_DD > 3 then 'N' end
 when TAT_Std_Ext_Prov_Written_DD <= 3 then 'Y' when TAT_Std_Ext_Prov_Written_DD > 3 then 'N' end
 where dbname = 'TX'
 
---oh update
 update sheiladb.dbo.DARR_Compliance 
 set Compliant_Exp_Appr_Decision = case when TAT_Exp_Appr_Decision_HH is null or TAT_Exp_Appr_Decision_HH < 0 then null
 when TAT_Exp_Appr_Decision_HH <= 48 then 'Y' when TAT_Exp_Appr_Decision_HH > 48 then 'N' end
@@ -1364,7 +1381,6 @@ when TAT_Std_Ext_Prov_DD <= 14 then 'Y' when TAT_Std_Ext_Prov_DD > 14 then 'N' e
 when TAT_Std_Ext_Prov_Written_DD <= 14 then 'Y' when TAT_Std_Ext_Prov_Written_DD > 14 then 'N' end
 where dbname = 'OH' and Match_Auth_Receipt >='2018-01-01'
 
---Part B effective 1/1/2020
 update sheiladb.dbo.DARR_Compliance
 set
 Compliant_Std_Appr_Decision =  case when TAT_Std_Appr_Decision_HH <= 72 and TAT_Std_Appr_Decision_HH >= 0 then 'Y' when TAT_Std_Appr_Decision_HH > 72 then 'N' end
@@ -1386,68 +1402,65 @@ Compliant_Std_Appr_Decision =  case when TAT_Std_Appr_Decision_HH <= 72 and TAT_
 ,Compliant_exp_Deny_Prov = case when TAT_exp_Deny_Prov_HH <= 24 and TAT_exp_Deny_Prov_HH >= 0 then 'Y' when TAT_exp_Deny_Prov_HH > 24 then 'N' end
 ,Compliant_exp_Deny_Prov_Written = case when TAT_exp_Deny_Prov_Written_HH <= 24 and TAT_exp_Deny_Prov_Written_HH >= 0 then 'Y' when TAT_exp_Deny_Prov_Written_HH > 24 then 'N' end
 where Part_B = 'y'
--------------------->>>>>>>>>>>>>>>>>>>________________________>>>>>>>>>>>>>>>>>>>________________________>>>>>>>>>>>>>>>>>>>--------------------
 
+--select distinct Timely, rpt from sheiladb.dbo.darr_timely where dbname = 'tx' and rpt = 'xa'
 if object_id('sheiladb.dbo.DARR_Timely') is not null drop table sheiladb.dbo.DARR_Timely
 select distinct Timely =
-case when acuity = 'Urgent' and partial = 'Y' and (compliant_exp_appr_mbr_verbal='y' or compliant_exp_appr_mbr_written='Y') 
+case when rpt = 'IP' and authstatus not in ('inprocess') then IP_Compliant
+when acuity = 'Urgent' and partial = 'Y' and (compliant_exp_appr_mbr_verbal='y' or compliant_exp_appr_mbr_written='Y') 
 			and (compliant_exp_deny_mbr_verbal='y' or compliant_exp_deny_mbr_written='Y') then 'Y'
 	when acuity = 'Urgent' and partial = 'Y' and (compliant_exp_appr_mbr_verbal='N' or compliant_exp_appr_mbr_written='N' or 
 				compliant_exp_deny_mbr_verbal='N' or compliant_exp_deny_mbr_written='N') then 'N'
-	when acuity <> 'Urgent' and partial = 'Y' and (compliant_std_appr_mbr_verbal='y' or compliant_std_appr_mbr_written='Y') 
+	when acuity = 'Standard' and partial = 'Y' and (compliant_std_appr_mbr_verbal='y' or compliant_std_appr_mbr_written='Y') 
 			and (compliant_std_deny_mbr_verbal='y' or compliant_std_deny_mbr_written='Y') then 'Y'
-	when acuity <> 'Urgent' and partial = 'Y' and (compliant_std_appr_mbr_verbal='N' or compliant_std_appr_mbr_written='N' or
+	when acuity = 'Standard' and partial = 'Y' and (compliant_std_appr_mbr_verbal='N' or compliant_std_appr_mbr_written='N' or
 				compliant_std_deny_mbr_verbal='N' or compliant_std_deny_mbr_written='N') then 'N'
-	when partial = 'Y' then null
+	when acuity in ('Urgent','Standard') and partial = 'Y' then null
 	when acuity = 'urgent' and (authstatus = 'approved' and Effective_Denial = 'N') and (compliant_exp_appr_mbr_verbal='y' or compliant_exp_appr_mbr_written='Y') then 'Y'
 	when acuity = 'urgent' and (authstatus = 'denied' or Effective_Denial = 'Y') and (compliant_exp_deny_mbr_verbal='y' or compliant_exp_deny_mbr_written='Y') then 'Y'
 	when acuity = 'urgent' and (authstatus = 'approved' and Effective_Denial = 'N') and (compliant_exp_appr_mbr_verbal='n' or compliant_exp_appr_mbr_written = 'n') then 'N'
 	when acuity = 'urgent' and (authstatus = 'denied' or Effective_Denial = 'Y') and (compliant_exp_deny_mbr_verbal='n' or compliant_exp_deny_mbr_written='n') then 'N'
-	when acuity <> 'urgent' and (authstatus = 'approved' and Effective_Denial = 'N') and (compliant_std_appr_mbr_verbal='y' or compliant_std_appr_mbr_written='Y') then 'Y'
-	when acuity <> 'urgent' and (authstatus = 'denied' or Effective_Denial = 'Y') and (compliant_std_deny_mbr_verbal='y' or compliant_std_deny_mbr_written='Y') then 'Y'
-	when acuity <> 'urgent' and (authstatus = 'approved' and Effective_Denial = 'N') and (compliant_std_appr_mbr_verbal='n' or compliant_std_appr_mbr_written='n') then 'N'
-	when acuity <> 'urgent' and (authstatus = 'denied' or Effective_Denial = 'Y') and (compliant_std_deny_mbr_verbal='n' or compliant_std_deny_mbr_written='n') then 'N'
+	when acuity = 'Elective' and (authstatus = 'approved' and Effective_Denial = 'N') and (compliant_std_appr_mbr_verbal='y' or compliant_std_appr_mbr_written='Y') then 'Y'
+	when acuity = 'Elective' and (authstatus = 'denied' or Effective_Denial = 'Y') and (compliant_std_deny_mbr_verbal='y' or compliant_std_deny_mbr_written='Y') then 'Y'
+	when acuity = 'Elective' and (authstatus = 'approved' and Effective_Denial = 'N') and (compliant_std_appr_mbr_verbal='n' or compliant_std_appr_mbr_written='n') then 'N'
+	when acuity = 'Elective' and (authstatus = 'denied' or Effective_Denial = 'Y') and (compliant_std_deny_mbr_verbal='n' or compliant_std_deny_mbr_written='n') then 'N'
 	end,* into sheiladb.dbo.DARR_Timely 
-	from sheiladb.dbo.DARR_Compliance a 
+	from sheiladb.dbo.DARR_Compliance a  (nolock)
 
---DISPLAY COMPLIANCE FOR PEND AND INPROCESS SELECT CASES
 update sheiladb.dbo.DARR_Timely
 set Timely = case 
 when acuity = 'Urgent' and partial = 'Y' and (compliant_exp_appr_mbr_verbal='y' or compliant_exp_appr_mbr_written='Y') 
 			and (compliant_exp_deny_mbr_verbal='y' or compliant_exp_deny_mbr_written='Y') then 'Y'
 when acuity = 'Urgent' and partial = 'Y' and (compliant_exp_appr_mbr_verbal='N' or compliant_exp_appr_mbr_written='N' or
 				compliant_exp_deny_mbr_verbal='N' or compliant_exp_deny_mbr_written='N') then 'N'
-when acuity <> 'Urgent' and partial = 'Y' and (compliant_std_appr_mbr_verbal='y' or compliant_std_appr_mbr_written='Y') 
+when acuity = 'Elective' and partial = 'Y' and (compliant_std_appr_mbr_verbal='y' or compliant_std_appr_mbr_written='Y') 
 			and (compliant_std_deny_mbr_verbal='y' or compliant_std_deny_mbr_written='Y') then 'Y'
-when acuity <> 'Urgent' and partial = 'Y' and (compliant_std_appr_mbr_verbal='N' or compliant_std_appr_mbr_written='N' or
+when acuity = 'Elective' and partial = 'Y' and (compliant_std_appr_mbr_verbal='N' or compliant_std_appr_mbr_written='N' or
 				compliant_std_deny_mbr_verbal='N' or compliant_std_deny_mbr_written='N') then 'N'
-when partial = 'Y' then null
+when acuity in ('Urgent','Elective') and partial = 'Y' then null
 when acuity = 'urgent' and exp_app_attr=1 and (compliant_exp_appr_mbr_verbal='Y' or compliant_exp_appr_mbr_written='Y') then 'Y'
 when acuity = 'urgent' and exp_den_attr=1 and (compliant_exp_deny_mbr_verbal='Y' or compliant_exp_deny_mbr_written='Y') then 'Y'
 when acuity = 'urgent' and exp_app_attr=1 and (compliant_exp_appr_mbr_verbal='N' or compliant_exp_appr_mbr_written = 'n') then 'N'
 when acuity = 'urgent' and exp_den_attr=1 and (compliant_exp_deny_mbr_verbal='N' or compliant_exp_deny_mbr_written='n') then 'N'
-when acuity <> 'urgent' and std_app_attr=1 and (compliant_std_appr_mbr_verbal='Y' or compliant_std_appr_mbr_written='Y') then 'Y'
-when acuity <> 'urgent' and std_den_attr=1 and (compliant_std_deny_mbr_verbal='Y' or compliant_std_deny_mbr_written='Y') then 'Y'
-when acuity <> 'urgent' and std_app_attr=1 and (compliant_std_appr_mbr_verbal='N' or compliant_std_appr_mbr_written='n') then 'N'
-when acuity <> 'urgent' and std_den_attr=1 and (compliant_std_deny_mbr_verbal='N' or compliant_std_deny_mbr_written='n') then 'N' end
+when acuity = 'Elective' and std_app_attr=1 and (compliant_std_appr_mbr_verbal='Y' or compliant_std_appr_mbr_written='Y') then 'Y'
+when acuity = 'Elective' and std_den_attr=1 and (compliant_std_deny_mbr_verbal='Y' or compliant_std_deny_mbr_written='Y') then 'Y'
+when acuity = 'Elective' and std_app_attr=1 and (compliant_std_appr_mbr_verbal='N' or compliant_std_appr_mbr_written='n') then 'N'
+when acuity = 'Elective' and std_den_attr=1 and (compliant_std_deny_mbr_verbal='N' or compliant_std_deny_mbr_written='n') then 'N' end
 where (rpt = 'PA' and ((servicecode in ('150','190','340','380','1188') and authstatus = 'PEND') or 
 (servicecode in ('110','150','190','231','340','370','380','1038') and authstatus = 'INPROCESS')))
 or (rpt = 'IP' and authstatus = 'INPROCESS')
 
---Include Extension Compliance into Timeliness 
 update sheiladb.dbo.DARR_Timely
 set timely = 'N' where ext = '1' and acuity = 'urgent' and (authstatus = 'approved' and Effective_Denial ='N') and compliant_exp_ext_mbr_written='n'
 update sheiladb.dbo.DARR_Timely
 set timely = 'N' where ext = '1' and acuity = 'urgent' and (authstatus = 'denied' or Effective_Denial = 'Y') and compliant_exp_ext_mbr_written='n'
 update sheiladb.dbo.DARR_Timely
-set timely = 'N' where ext = '1' and acuity <> 'urgent' and (authstatus = 'approved' and Effective_Denial ='N') and compliant_std_ext_mbr_written='n'
+set timely = 'N' where ext = '1' and acuity = 'Elective' and (authstatus = 'approved' and Effective_Denial ='N') and compliant_std_ext_mbr_written='n'
 update sheiladb.dbo.DARR_Timely
-set timely = 'N' where ext = '1' and acuity <> 'urgent' and (authstatus = 'denied' or Effective_Denial = 'Y') and compliant_std_ext_mbr_written='n'
+set timely = 'N' where ext = '1' and acuity = 'Elective' and (authstatus = 'denied' or Effective_Denial = 'Y') and compliant_std_ext_mbr_written='n'
 
---Include Expedited NonPar Provider Additional Info Compliance into Timeliness
 update sheiladb.dbo.DARR_Timely 
 set timely = 'N' where enp ='1' and Compliant_Exp_NonPar_Prov = 'N'
---Mark compliance blank where decision is blank
 update sheiladb.dbo.DARR_Timely 
 set timely = NULL where timely in ('Y','N') and
 case when acty_grp = 'Standard' and (authstatus = 'approved' and effective_denial ='N') and [Decision Date - STANDARD APPROVAL] is null then 1
@@ -1455,22 +1468,8 @@ when acty_grp = 'Standard' and (authstatus = 'denied' or Effective_Denial = 'Y')
 when acty_grp = 'Urgent' and (authstatus = 'approved' and effective_denial  ='N') and ([Decision Date - EXPEDITED APPROVAL] is null or ([Decision Time - EXPEDITED APPROVAL] is null and dbname <> 'tx'))  then 1
 when acty_grp = 'Urgent' and (authstatus = 'denied' or Effective_Denial = 'Y') and ([Decision Date - EXPEDITED DENIAL] is null or ([Decision Time - EXPEDITED DENIAL] is null and dbname <> 'tx')) then 1
 else 0 end = 1
---Mark compliance blank where acuity = 'Routine'
 update sheiladb.dbo.DARR_Timely set timely = NULL where timely in ('Y','N') and acuity = 'routine'
---Mark compliance blank for receipt date mismatches
-update sheiladb.dbo.DARR_Timely 
-set timely = NULL
-where (cast(receiptdate as date) <> cast(Exp_Appr_Auth_Receipt as date) and Exp_Appr_Auth_Receipt <>'')
-or (cast(receiptdate as date) <> cast(Exp_Deny_Auth_Receipt as date) and Exp_Deny_Auth_Receipt <>'')
-or (cast(receiptdate as date) <> cast(Std_Appr_Auth_Receipt as date) and Std_Appr_Auth_Receipt <>'')
-or (cast(receiptdate as date) <> cast(Std_Deny_Auth_Receipt as date) and Std_Deny_Auth_Receipt <>'')
-or (cast(Exp_Appr_Auth_Receipt as date) <> cast(Exp_Deny_Auth_Receipt as date) and Exp_Appr_Auth_Receipt <>'' and Exp_Deny_Auth_Receipt <>'')
-or (cast(Std_Appr_Auth_Receipt as date) <> cast(Std_Deny_Auth_Receipt as date) and Std_Appr_Auth_Receipt <>'' and Std_Deny_Auth_Receipt <>'')
-or (cast(Exp_Appr_Auth_Receipt as date) <> cast(Std_Deny_Auth_Receipt as date) and Exp_Appr_Auth_Receipt <>'' and Std_Deny_Auth_Receipt <>'')
-or (cast(Std_Appr_Auth_Receipt as date) <> cast(Exp_Deny_Auth_Receipt as date) and Std_Appr_Auth_Receipt <>'' and Exp_Deny_Auth_Receipt <>'')
-or (cast(Exp_Appr_Auth_Receipt as date) <> cast(Std_Appr_Auth_Receipt as date) and Exp_Appr_Auth_Receipt <>'' and Std_Appr_Auth_Receipt <>'')
-or (cast(Std_Deny_Auth_Receipt as date) <> cast(Exp_Deny_Auth_Receipt as date) and Std_Deny_Auth_Receipt <>'' and Exp_Deny_Auth_Receipt <>'')
-
+update sheiladb.dbo.DARR_Timely set IP_TAT_Days = null
 update sheiladb.dbo.DARR_Timely set timely = NULL where timely is not null and
 (TAT_Std_Appr_Mbr_Verbal_DD like '%-%' or TAT_Std_Appr_Mbr_Verbal_HH like '%-%' or TAT_Std_Appr_Mbr_Written_DD like '%-%' or TAT_Std_Appr_Mbr_Written_HH like '%-%'
 or TAT_Std_Appr_Prov_DD like '%-%' or TAT_Std_Appr_Prov_HH like '%-%' or TAT_Std_Deny_Decision_DD like '%-%' or TAT_Std_Deny_Decision_HH like '%-%'
@@ -1491,7 +1490,7 @@ if object_id('sheiladb.dbo.DARR_Format') is not null drop table sheiladb.dbo.DAR
 select getdate() CreateDate,Timely Compliant, a.Partial, Pend_Service, Part_B
 , MD_Review = case when MD_Review is null and (a.authstatus = 'Denied' or a.partial = 'Y') then 'N' when MD_Review is null then 'NA' else MD_Review end 
 , Denial_Reason = case when Denial_Reason is null and (a.partial = 'Y' or a.authstatus = 'denied') then 'N' when Denial_Reason is null then 'NA' else Denial_Reason end
-,userid,cast(servicecode as varchar) servicecode
+,a.Effective_Denial,userid,cast(servicecode as varchar) servicecode
 , HH_Cont_Servs = case when z.hh_cont_servs is not null then 'Y' else '' end
 ,review_unit = case when rpt = 'AI' then 'Advanced Imaging' when servicecode = '231' then 'Health Plan' 
 when planname in ('CA','ID','MI','OH','SC','TX','UT','WA') and servicecode in ('1038','370') then 'Health Plan' 
@@ -1770,6 +1769,54 @@ else 'Central Medicare Unit' end
 ,left(convert(varchar,Std_Ext_Prov_Written,120),16) Std_Ext_Prov_Written
 ,cast(floor(TAT_Std_Ext_Prov_Written_DD) as varchar) TAT_Std_Ext_Prov_Written
 ,Compliant_Std_Ext_Prov_Written
+,Receipt_dates_mismatch = case when (cast(receiptdate as date) <> cast(Exp_Appr_Auth_Receipt as date) and Exp_Appr_Auth_Receipt <>'')
+or (cast(receiptdate as date) <> cast(Exp_Deny_Auth_Receipt as date) and Exp_Deny_Auth_Receipt <>'')
+or (cast(receiptdate as date) <> cast(Std_Appr_Auth_Receipt as date) and Std_Appr_Auth_Receipt <>'')
+or (cast(receiptdate as date) <> cast(Std_Deny_Auth_Receipt as date) and Std_Deny_Auth_Receipt <>'')
+or (cast(Exp_Appr_Auth_Receipt as date) <> cast(Exp_Deny_Auth_Receipt as date) and Exp_Appr_Auth_Receipt <>'' and Exp_Deny_Auth_Receipt <>'')
+or (cast(Std_Appr_Auth_Receipt as date) <> cast(Std_Deny_Auth_Receipt as date) and Std_Appr_Auth_Receipt <>'' and Std_Deny_Auth_Receipt <>'')
+or (cast(Exp_Appr_Auth_Receipt as date) <> cast(Std_Deny_Auth_Receipt as date) and Exp_Appr_Auth_Receipt <>'' and Std_Deny_Auth_Receipt <>'')
+or (cast(Std_Appr_Auth_Receipt as date) <> cast(Exp_Deny_Auth_Receipt as date) and Std_Appr_Auth_Receipt <>'' and Exp_Deny_Auth_Receipt <>'')
+or (cast(Exp_Appr_Auth_Receipt as date) <> cast(Std_Appr_Auth_Receipt as date) and Exp_Appr_Auth_Receipt <>'' and Std_Appr_Auth_Receipt <>'')
+or (cast(Std_Deny_Auth_Receipt as date) <> cast(Exp_Deny_Auth_Receipt as date) and Std_Deny_Auth_Receipt <>'' and Exp_Deny_Auth_Receipt <>'') then 'Y' else '' end
+, Decision_before_Receipt = case when Exp_Appr_Auth_Receipt > Exp_Appr_Decision or Exp_Deny_Auth_Receipt > Exp_Deny_Decision or Std_Appr_Auth_Receipt > Std_Appr_Decision 
+		or Std_Deny_Auth_Receipt > Std_Deny_Decision or Exp_Ext_Auth_Receipt > Exp_Ext_Decision or Exp_Ext_Auth_Receipt > Exp_Ext_Decision then 'Y' else '' end  
+,' ' Extension_before_Receipt
+,' ' Extension_after_Decision
+,' ' ICD9_Codes
+,' ' No_MD_Name
+,' ' No_Denial_Reason
+,Mbr_Verbal_before_Receipt = case when Exp_Appr_Auth_Receipt > Exp_Appr_Mbr_Verbal or Exp_Deny_Auth_Receipt > Exp_Deny_Mbr_Verbal or Std_Appr_Auth_Receipt > Std_Appr_Mbr_Verbal 
+		or Std_Deny_Auth_Receipt > Std_Deny_Mbr_Verbal or Exp_Ext_Auth_Receipt > Exp_Ext_Mbr_Verbal  then 'Y' else '' end  
+,Mbr_Written_before_Receipt = case when Exp_Appr_Auth_Receipt > Exp_Appr_Mbr_Written or Exp_Deny_Auth_Receipt > Exp_Deny_Mbr_Written or Std_Appr_Auth_Receipt > Std_Appr_Mbr_Written 
+		or Std_Deny_Auth_Receipt > Std_Deny_Mbr_Written or Exp_Ext_Auth_Receipt > Exp_Ext_Mbr_Written  then 'Y' else '' end   
+,Prov_Notif_before_Receipt = case when Exp_Appr_Auth_Receipt > Exp_Appr_Prov or Exp_Deny_Auth_Receipt > Exp_Deny_Prov or Std_Appr_Auth_Receipt > Std_Appr_Prov
+		or Std_Deny_Auth_Receipt > Std_Deny_Prov or Exp_Ext_Auth_Receipt > Exp_Ext_Prov  then 'Y' else '' end 
+,Prov_Written_before_Receipt = case when Exp_Appr_Auth_Receipt > Exp_Appr_Prov or Exp_Deny_Auth_Receipt > Exp_Deny_Prov or Std_Appr_Auth_Receipt > Std_Appr_Prov
+		or Std_Deny_Auth_Receipt > Std_Deny_Prov or Exp_Ext_Auth_Receipt > Exp_Ext_Prov  then 'Y' else '' end 
+,Mbr_Verbal_before_Decision = case when Exp_Appr_Decision > Exp_Appr_Mbr_Verbal or Exp_Deny_Decision > Exp_Deny_Mbr_Verbal or Std_Appr_Decision > Std_Appr_Mbr_Verbal 
+		or Std_Deny_Decision > Std_Deny_Mbr_Verbal or Exp_Ext_Decision > Exp_Ext_Mbr_Verbal then 'Y' else '' end  
+,Mbr_Written_before_Decision = case when Exp_Appr_Decision > Exp_Appr_Mbr_Written or Exp_Deny_Decision > Exp_Deny_Mbr_Written or Std_Appr_Decision > Std_Appr_Mbr_Written
+		or Std_Deny_Decision > Std_Deny_Mbr_Written or Exp_Ext_Decision > Exp_Ext_Mbr_Written then 'Y' else '' end  
+,Prov_Notif_before_Decision = case when Exp_Appr_Decision > Exp_Appr_Prov or Exp_Deny_Decision > Exp_Deny_Prov or Std_Appr_Decision > Std_Appr_Prov
+		or Std_Deny_Decision > Std_Deny_Prov or Exp_Ext_Decision > Exp_Ext_Prov then 'Y' else '' end  
+,Prov_Written_before_Decision = case when Exp_Appr_Decision > Exp_Appr_Prov or Exp_Deny_Decision > Exp_Deny_Prov or Std_Appr_Decision > Std_Appr_Prov
+		or Std_Deny_Decision > Std_Deny_Prov or Exp_Ext_Decision > Exp_Ext_Prov then 'Y' else '' end  
+,' ' Care_Type_or_template
+,' ' Denied_with_Approved_services
+,' ' Statuses_mismatch
+,Mbr_Verbal_no_Time = case when Exp_Appr_Mbr_Verbal_Date is not null and Exp_Appr_Mbr_Verbal_Time is null then 'Y' when Exp_Deny_Mbr_Verbal_Date is not null and Exp_Deny_Mbr_Verbal_Time is null then 'Y' end
+,Mbr_Verbal_no_Date = case when Exp_Appr_Mbr_Verbal_Date is null and Exp_Appr_Mbr_Verbal_Time is not null then 'Y' when Exp_Deny_Mbr_Verbal_Date is null and Exp_Deny_Mbr_Verbal_Time is not null then 'Y' end
+,Mbr_Written_no_Time = case when Exp_Appr_Mbr_Written_Date is not null and Exp_Appr_Mbr_Written_Time is null then 'Y' when Exp_Deny_Mbr_Written_Date is not null and Exp_Deny_Mbr_Written_Time is null then 'Y' end
+,Mbr_Written_no_Date = case when Exp_Appr_Mbr_Written_Date is null and Exp_Appr_Mbr_Written_Time is not null then 'Y' when Exp_Deny_Mbr_Written_Date is null and Exp_Deny_Mbr_Written_Time is not null then 'Y' end
+,Prov_Notif_no_Time = ' '--case when Exp_Appr_Prov is not null and Exp_Appr_Mbr_Verbal_Time is null then 'Y' when Exp_Deny_Mbr_Verbal_Date is not null and Exp_Deny_Mbr_Verbal_Time is null then 'Y' end
+,' ' Prov_Notif_no_Date
+,' ' Prov_Written_no_Time
+,' ' Prov_Written_no_Date
+,' ' Appeal_Outcome_2
+,No_Decision = case when Exp_Appr_Decision is null and Exp_Deny_Decision is null and Std_Appr_Decision is null and Std_Deny_Decision is null and Exp_Ext_Decision is null then 'Y' end
+,No_Prov_Notif = case when Exp_Appr_Prov is null and Exp_Deny_Prov is null and Std_Appr_Prov is null and Std_Deny_Prov is null and Exp_Ext_Prov is null then 'Y' end
+,' ' No_Prov_Written_Notif
 , Auth_Count = 1
 , Compliant_Count = case when timely in ('Y') then 1 else 0 end
 , Rpt_Count = case when acty_grp in ('Standard','Expedited','Emergency') then 1 else 0 end
@@ -1778,7 +1825,7 @@ else 'Central Medicare Unit' end
 ,Exp_Crit_Mbr_Written_Calc=''
 ,Exp_Deny_mbr_Written_Calc=''
 into sheiladb.dbo.DARR_Format
-from sheiladb.dbo.DARR_Timely a 
+from sheiladb.dbo.DARR_Timely a  (nolock)
 left join sheiladb.dbo.DARR_Misc_Attr z on z.dbname = a.dbname and z.referralid = a.referralid 
 left join sheiladb.dbo.HCS_Appeals ap on ap.referralid = a.referralid and ap.dbname = a.dbname
 left join sheiladb.dbo.DARR_Denials dn on dn.referralid = a.referralid and dn.dbname = a.dbname
@@ -2076,7 +2123,37 @@ Tracking_Std_Appr varchar(30) not null,
 Tracking_Std_Deny varchar(30) not null,
 Tracking_Std_Ext varchar(30) not null,
 TOC_Verified_DC_Plan_Sent varchar(10) not null,
-TOC_Verified_Fac varchar(10) not null
+TOC_Verified_Fac varchar(10) not null,
+Receipt_dates_mismatch	varchar(1) not null,
+Decision_before_Receipt	varchar(1) not null,
+Extension_before_Receipt	varchar(1) not null,
+Extension_after_Decision	varchar(1) not null,
+ICD9_Codes	varchar(1) not null,
+No_MD_Name	varchar(1) not null,
+No_Denial_Reason	varchar(1) not null,
+Mbr_Verbal_before_Receipt	varchar(1) not null,
+Mbr_Written_before_Receipt	varchar(1) not null,
+Prov_Notif_before_Receipt	varchar(1) not null,
+Prov_Written_before_Receipt	varchar(1) not null,
+Mbr_Verbal_before_Decision	varchar(1) not null,
+Mbr_Written_before_Decision	varchar(1) not null,
+Prov_Notif_before_Decision	varchar(1) not null,
+Prov_Written_before_Decision	varchar(1) not null,
+Care_Type_or_template	varchar(1) not null,
+Denied_with_Approved_services	varchar(1) not null,
+Statuses_mismatch	varchar(1) not null,
+Mbr_Verbal_no_Time	varchar(1) not null,
+Mbr_Verbal_no_Date	varchar(1) not null,
+Mbr_Written_no_Time	varchar(1) not null,
+Mbr_Written_no_Date	varchar(1) not null,
+Prov_Notif_no_Time	varchar(1) not null,
+Prov_Notif_no_Date	varchar(1) not null,
+Prov_Written_no_Time	varchar(1) not null,
+Prov_Written_no_Date	varchar(1) not null,
+Appeal_Outcome_2	varchar(1) not null,
+No_Decision	varchar(1) not null,
+No_Prov_Notif	varchar(1) not null,
+No_Prov_Written_Notif	varchar(1) not null
 )
 
 insert sheiladb.dbo.DARR_Final
@@ -2370,11 +2447,40 @@ isnull(Tracking_Std_Appr,'') Tracking_Std_Appr,
 isnull(Tracking_Std_Deny,'') Tracking_Std_Deny,
 isnull(Tracking_Std_Ext,'') Tracking_Std_Ext,
 isnull(TOC_Verified_DC_Plan_Sent,'') TOC_Verified_DC_Plan_Sent,
-isnull(TOC_Verified_Fac,'') TOC_Verified_Fac
-from sheiladb.dbo.darr_format 
+isnull(TOC_Verified_Fac,'') TOC_Verified_Fac,
+isnull(Receipt_dates_mismatch,'') Receipt_dates_mismatch,
+isnull(Decision_before_Receipt,'') Decision_before_Receipt,
+isnull(Extension_before_Receipt,'') Extension_before_Receipt,
+isnull(Extension_after_Decision,'') Extension_after_Decision,
+isnull(ICD9_Codes,'')ICD9_Codes ,
+isnull(No_MD_Name,'') No_MD_Name,
+isnull(No_Denial_Reason,'') No_Denial_Reason,
+isnull(Mbr_Verbal_before_Receipt,'') Mbr_Verbal_before_Receipt,
+isnull(Mbr_Written_before_Receipt,'') Mbr_Written_before_Receipt,
+isnull(Prov_Notif_before_Receipt,'') Prov_Notif_before_Receipt,
+isnull(Prov_Written_before_Receipt,'') Prov_Written_before_Receipt,
+isnull(Mbr_Verbal_before_Decision,'') Mbr_Verbal_before_Decision,
+isnull(Mbr_Written_before_Decision,'') Mbr_Written_before_Decision,
+isnull(Prov_Notif_before_Decision,'') Prov_Notif_before_Decision,
+isnull(Prov_Written_before_Decision,'') Prov_Written_before_Decision,
+isnull(Care_Type_or_template,'') Care_Type_or_template,
+isnull(Denied_with_Approved_services,'') Denied_with_Approved_services,
+isnull(Statuses_mismatch,'')Statuses_mismatch,
+isnull(Mbr_Verbal_no_Time,'')Mbr_Verbal_no_Time,
+isnull(Mbr_Verbal_no_Date,'')Mbr_Verbal_no_Date,
+isnull(Mbr_Written_no_Time,'')Mbr_Written_no_Time,
+isnull(Mbr_Written_no_Date,'')Mbr_Written_no_Date,
+isnull(Prov_Notif_no_Time,'')Prov_Notif_no_Time,
+isnull(Prov_Notif_no_Date,'')Prov_Notif_no_Date,
+isnull(Prov_Written_no_Time,'')Prov_Written_no_Time,
+isnull(Prov_Written_no_Date,'')Prov_Written_no_Date,
+isnull(Appeal_Outcome_2,'')Appeal_Outcome_2,
+isnull(No_Decision,'')No_Decision,
+isnull(No_Prov_Notif,'')No_Prov_Notif,
+isnull(No_Prov_Written_Notif,'')No_Prov_Written_Notif
+from sheiladb.dbo.darr_format  (nolock)
 
---Blank out irrelevant TAT based on hours/days
-update sheiladb.dbo.darr_final
+update sheiladb.dbo.darr_final 
 set TAT_Exp_Appr_Decision_HH=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Appr_Auth_Receipt)=6 and Match_Auth_Receipt >= '2019-01-01') then '' else TAT_Exp_Appr_Decision_HH end 
 ,TAT_Exp_Appr_Decision_DD=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Appr_Auth_Receipt)=6 and Match_Auth_Receipt >= '2019-01-01') then TAT_Exp_Appr_Decision_DD else '' end
 ,TAT_Exp_Appr_Mbr_Verbal_DD=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Appr_Auth_Receipt)=6 and Match_Auth_Receipt >= '2019-01-01') then TAT_Exp_Appr_Mbr_Verbal_DD else '' end 
@@ -2387,134 +2493,139 @@ set TAT_Exp_Appr_Decision_HH=case when ext='1' or (DBname = 'TX' and datepart(dw
 ,TAT_Exp_Deny_Decision_DD=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Deny_Auth_Receipt)=6 and Exp_Deny_Auth_Receipt >= '2019-01-01') then TAT_Exp_Deny_Decision_DD else '' end
 ,TAT_Exp_Deny_Mbr_Verbal_DD=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Deny_Auth_Receipt)=6 and Exp_Deny_Auth_Receipt >= '2019-01-01') then TAT_Exp_Deny_Mbr_Verbal_DD else '' end 
 ,TAT_Exp_Deny_Mbr_Verbal_HH=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Deny_Auth_Receipt)=6 and Exp_Deny_Auth_Receipt >= '2019-01-01') then '' else TAT_Exp_Deny_Mbr_Verbal_HH end 
-,TAT_Exp_Deny_Mbr_Written_DD=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Deny_Auth_Receipt)=6 and Exp_Deny_Auth_Receipt >= '2019-01-01') then TAT_Exp_Deny_Mbr_Written_DD else '' end 
-,TAT_Exp_Deny_Mbr_Written_HH=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Deny_Auth_Receipt)=6 and Exp_Deny_Auth_Receipt >= '2019-01-01')  then '' else TAT_Exp_Deny_Mbr_Written_HH end 
+,TAT_Exp_Deny_Mbr_Written_DD=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Deny_Auth_Receipt)=6 and Exp_Deny_Auth_Receipt >= '2019-01-01') 
+	or (TAT_Exp_Deny_Mbr_Verbal_HH <>'' and cast(TAT_Exp_Deny_Mbr_Verbal_HH as decimal) <=72 and cast(TAT_Exp_Deny_Mbr_Verbal_HH as decimal)>=0 and dbname not in ('TX','OH'))
+	then TAT_Exp_Deny_Mbr_Written_DD else '' end 
+,TAT_Exp_Deny_Mbr_Written_HH=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Deny_Auth_Receipt)=6 and Exp_Deny_Auth_Receipt >= '2019-01-01') 
+	or (TAT_Exp_Deny_Mbr_Verbal_HH <>'' and cast(TAT_Exp_Deny_Mbr_Verbal_HH as decimal) <=72 and cast(TAT_Exp_Deny_Mbr_Verbal_HH as decimal)>=0 and dbname not in ('TX','OH'))
+	then '' else TAT_Exp_Deny_Mbr_Written_HH end 
 ,TAT_Exp_Deny_Prov_DD=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Deny_Auth_Receipt)=6 and Exp_Deny_Auth_Receipt >= '2019-01-01') then TAT_Exp_Deny_Prov_DD else '' end 
 ,TAT_Exp_Deny_Prov_HH=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Deny_Auth_Receipt)=6 and Exp_Deny_Auth_Receipt >= '2019-01-01') then '' else TAT_Exp_Deny_Prov_HH end 
-,TAT_Exp_Deny_Prov_Written_DD=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Deny_Auth_Receipt)=6 and Exp_Deny_Auth_Receipt >= '2019-01-01') then TAT_Exp_Deny_Prov_Written_DD else '' end 
-,TAT_Exp_Deny_Prov_Written_HH=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Deny_Auth_Receipt)=6 and Exp_Deny_Auth_Receipt >= '2019-01-01') then '' else TAT_Exp_Deny_Prov_Written_HH end 
-
-
+,TAT_Exp_Deny_Prov_Written_DD=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Deny_Auth_Receipt)=6 and Exp_Deny_Auth_Receipt >= '2019-01-01') 
+	or (TAT_Exp_Deny_Mbr_Verbal_HH <>'' and cast(TAT_Exp_Deny_Mbr_Verbal_HH as decimal) <=72 and cast(TAT_Exp_Deny_Mbr_Verbal_HH as decimal)>=0 and dbname not in ('TX','OH'))
+	then TAT_Exp_Deny_Prov_Written_DD else '' end  
+,TAT_Exp_Deny_Prov_Written_HH=case when ext='1' or (DBname = 'TX' and datepart(dw,Exp_Deny_Auth_Receipt)=6 and Exp_Deny_Auth_Receipt >= '2019-01-01') 
+	or (TAT_Exp_Deny_Mbr_Verbal_HH <>'' and cast(TAT_Exp_Deny_Mbr_Verbal_HH as decimal) <=72 and cast(TAT_Exp_Deny_Mbr_Verbal_HH as decimal)>=0 and dbname not in ('TX','OH'))
+	then '' else TAT_Exp_Deny_Prov_Written_HH end  
+	
 if object_id('sheiladb.dbo.DARR_SFinal') is not null drop table sheiladb.dbo.DARR_SFinal
 select Acty_Grp,Anchor_Receipt_Date,Auth_Count,Auth_CreateDate,Auth_Template,a.AuthorizationID,AuthStatus
 ,AuthType,CareType,Category,Compliance_Acuity,Compliant_Count,a.DBname,Enp,Ext,Extension,LOB,LOBname,ord,PlanName,RPT	
-,case when Compliant = 'Y' then '1' when Compliant = 'N' then '0' else '' end Compliant, Partial
-,case when Compliant_Exp_Appr_Mbr_Verbal = 'Y' then '1' when Compliant_Exp_Appr_Mbr_Verbal = 'N' then '0' else '' end as Compliant_Exp_Appr_Mbr_Verbal
-,case when Compliant_Exp_Appr_Mbr_Written = 'Y' then '1' when Compliant_Exp_Appr_Mbr_Written = 'N' then '0' else '' end as Compliant_Exp_Appr_Mbr_Written
-,case when Compliant_Exp_Appr_Prov_Notif = 'Y' then '1' when Compliant_Exp_Appr_Prov_Notif = 'N' then '0' else '' end as Compliant_Exp_Appr_Prov_Notif
-,case when Compliant_Exp_Deny_Mbr_Verbal = 'Y' then '1' when Compliant_Exp_Deny_Mbr_Verbal = 'N' then '0' else '' end as Compliant_Exp_Deny_Mbr_Verbal
-,case when Compliant_Exp_Deny_Mbr_Written = 'Y' then '1' when Compliant_Exp_Deny_Mbr_Written = 'N' then '0' else '' end as Compliant_Exp_Deny_Mbr_Written
-,case when Compliant_Exp_Deny_Prov = 'Y' then '1' when Compliant_Exp_Deny_Prov = 'N' then '0' else '' end as Compliant_Exp_Deny_Prov
-,case when Compliant_Exp_Deny_Prov_Written = 'Y' then '1' when Compliant_Exp_Deny_Prov_Written = 'N' then '0' else '' end as Compliant_Exp_Deny_Prov_Written
-,case when Compliant_Exp_Ext_Mbr_Verbal_Notif = 'Y' then '1' when Compliant_Exp_Ext_Mbr_Verbal_Notif = 'N' then '0' else '' end as Compliant_Exp_Ext_Mbr_Verbal_Notif
-,case when Compliant_Exp_Ext_Mbr_Written = 'Y' then '1' when Compliant_Exp_Ext_Mbr_Written = 'N' then '0' else '' end as Compliant_Exp_Ext_Mbr_Written
-,case when Compliant_Exp_Ext_Prov = 'Y' then '1' when Compliant_Exp_Ext_Prov = 'N' then '0' else '' end as Compliant_Exp_Ext_Prov
-,case when Compliant_Exp_Ext_Prov_Written = 'Y' then '1' when Compliant_Exp_Ext_Prov_Written = 'N' then '0' else '' end as Compliant_Exp_Ext_Prov_Written
-,case when Compliant_Exp_NonPar_Prov = 'Y' then '1' when Compliant_Exp_NonPar_Prov = 'N' then '0' else '' end as Compliant_Exp_NonPar_Prov
-,case when Compliant_Std_Appr_Mbr_Verbal = 'Y' then '1' when Compliant_Std_Appr_Mbr_Verbal = 'N' then '0' else '' end as Compliant_Std_Appr_Mbr_Verbal
-,case when Compliant_Std_Appr_Mbr_Written = 'Y' then '1' when Compliant_Std_Appr_Mbr_Written = 'N' then '0' else '' end as Compliant_Std_Appr_Mbr_Written
-,case when Compliant_Std_Appr_Prov = 'Y' then '1' when Compliant_Std_Appr_Prov = 'N' then '0' else '' end as Compliant_Std_Appr_Prov
-,case when Compliant_Std_Deny_Mbr_Verbal = 'Y' then '1' when Compliant_Std_Deny_Mbr_Verbal = 'N' then '0' else '' end as Compliant_Std_Deny_Mbr_Verbal
-,case when Compliant_Std_Deny_Mbr_Written = 'Y' then '1' when Compliant_Std_Deny_Mbr_Written = 'N' then '0' else '' end as Compliant_Std_Deny_Mbr_Written
-,case when Compliant_Std_Deny_Prov = 'Y' then '1' when Compliant_Std_Deny_Prov = 'N' then '0' else '' end as Compliant_Std_Deny_Prov
-,case when Compliant_Std_Deny_Prov_Written = 'Y' then '1' when Compliant_Std_Deny_Prov_Written = 'N' then '0' else '' end as Compliant_Std_Deny_Prov_Written
-,case when Compliant_Std_Ext_Mbr_Verbal = 'Y' then '1' when Compliant_Std_Ext_Mbr_Verbal = 'N' then '0' else '' end as Compliant_Std_Ext_Mbr_Verbal
-,case when Compliant_Std_Ext_Mbr_Written = 'Y' then '1' when Compliant_Std_Ext_Mbr_Written = 'N' then '0' else '' end as Compliant_Std_Ext_Mbr_Written
-,case when Compliant_Std_Ext_Prov_Notif = 'Y' then '1' when Compliant_Std_Ext_Prov_Notif = 'N' then '0' else '' end as Compliant_Std_Ext_Prov_Notif
-,case when Compliant_Std_Ext_Prov_Written = 'Y' then '1' when Compliant_Std_Ext_Prov_Written = 'N' then '0' else '' end as Compliant_Std_Ext_Prov_Written
-into sheiladb.dbo.DARR_SFinal from sheiladb.dbo.DARR_Final a where rpt_count = 1
+,case when Compliant = 'Y' then 1 when Compliant = 'N' then 0  end Compliant, Partial
+,case when Compliant_Exp_Appr_Mbr_Verbal = 'Y' then 1 when Compliant_Exp_Appr_Mbr_Verbal = 'N' then 0  end as Compliant_Exp_Appr_Mbr_Verbal
+,case when Compliant_Exp_Appr_Mbr_Written = 'Y' then 1 when Compliant_Exp_Appr_Mbr_Written = 'N' then 0  end as Compliant_Exp_Appr_Mbr_Written
+,case when Compliant_Exp_Appr_Prov_Notif = 'Y' then 1 when Compliant_Exp_Appr_Prov_Notif = 'N' then 0  end as Compliant_Exp_Appr_Prov_Notif
+,case when Compliant_Exp_Deny_Mbr_Verbal = 'Y' then 1 when Compliant_Exp_Deny_Mbr_Verbal = 'N' then 0  end as Compliant_Exp_Deny_Mbr_Verbal
+,case when Compliant_Exp_Deny_Mbr_Written = 'Y' then 1 when Compliant_Exp_Deny_Mbr_Written = 'N' then 0  end as Compliant_Exp_Deny_Mbr_Written
+,case when Compliant_Exp_Deny_Prov = 'Y' then 1 when Compliant_Exp_Deny_Prov = 'N' then 0  end as Compliant_Exp_Deny_Prov
+,case when Compliant_Exp_Deny_Prov_Written = 'Y' then 1 when Compliant_Exp_Deny_Prov_Written = 'N' then 0  end as Compliant_Exp_Deny_Prov_Written
+,case when Compliant_Exp_Ext_Mbr_Verbal_Notif = 'Y' then 1 when Compliant_Exp_Ext_Mbr_Verbal_Notif = 'N' then 0  end as Compliant_Exp_Ext_Mbr_Verbal_Notif
+,case when Compliant_Exp_Ext_Mbr_Written = 'Y' then 1 when Compliant_Exp_Ext_Mbr_Written = 'N' then 0  end as Compliant_Exp_Ext_Mbr_Written
+,case when Compliant_Exp_Ext_Prov = 'Y' then 1 when Compliant_Exp_Ext_Prov = 'N' then 0  end as Compliant_Exp_Ext_Prov
+,case when Compliant_Exp_Ext_Prov_Written = 'Y' then 1 when Compliant_Exp_Ext_Prov_Written = 'N' then 0  end as Compliant_Exp_Ext_Prov_Written
+,case when Compliant_Exp_NonPar_Prov = 'Y' then 1 when Compliant_Exp_NonPar_Prov = 'N' then 0  end as Compliant_Exp_NonPar_Prov
+,case when Compliant_Std_Appr_Mbr_Verbal = 'Y' then 1 when Compliant_Std_Appr_Mbr_Verbal = 'N' then 0  end as Compliant_Std_Appr_Mbr_Verbal
+,case when Compliant_Std_Appr_Mbr_Written = 'Y' then 1 when Compliant_Std_Appr_Mbr_Written = 'N' then 0  end as Compliant_Std_Appr_Mbr_Written
+,case when Compliant_Std_Appr_Prov = 'Y' then 1 when Compliant_Std_Appr_Prov = 'N' then 0  end as Compliant_Std_Appr_Prov
+,case when Compliant_Std_Deny_Mbr_Verbal = 'Y' then 1 when Compliant_Std_Deny_Mbr_Verbal = 'N' then 0  end as Compliant_Std_Deny_Mbr_Verbal
+,case when Compliant_Std_Deny_Mbr_Written = 'Y' then 1 when Compliant_Std_Deny_Mbr_Written = 'N' then 0  end as Compliant_Std_Deny_Mbr_Written
+,case when Compliant_Std_Deny_Prov = 'Y' then 1 when Compliant_Std_Deny_Prov = 'N' then 0  end as Compliant_Std_Deny_Prov
+,case when Compliant_Std_Deny_Prov_Written = 'Y' then 1 when Compliant_Std_Deny_Prov_Written = 'N' then 0  end as Compliant_Std_Deny_Prov_Written
+,case when Compliant_Std_Ext_Mbr_Verbal = 'Y' then 1 when Compliant_Std_Ext_Mbr_Verbal = 'N' then 0  end as Compliant_Std_Ext_Mbr_Verbal
+,case when Compliant_Std_Ext_Mbr_Written = 'Y' then 1 when Compliant_Std_Ext_Mbr_Written = 'N' then 0  end as Compliant_Std_Ext_Mbr_Written
+,case when Compliant_Std_Ext_Prov_Notif = 'Y' then 1 when Compliant_Std_Ext_Prov_Notif = 'N' then 0  end as Compliant_Std_Ext_Prov_Notif
+,case when Compliant_Std_Ext_Prov_Written = 'Y' then 1 when Compliant_Std_Ext_Prov_Written = 'N' then 0  end as Compliant_Std_Ext_Prov_Written
+into sheiladb.dbo.DARR_SFinal from sheiladb.dbo.DARR_Final a (nolock)
 
 if object_id('sheiladb.dbo.DARR_Summary_ExEVS') is not null drop table sheiladb.dbo.DARR_Summary_ExEVS
-select * into sheiladb.dbo.DARR_Summary_ExEVS from sheiladb.dbo.DARR_SFinal where rpt='EV' and caretype = 'urgent'
+select * into sheiladb.dbo.DARR_Summary_ExEVS from sheiladb.dbo.DARR_SFinal (nolock) where rpt='EV' and caretype = 'urgent'
 if object_id('sheiladb.dbo.DARR_Detail_ExEVD') is not null drop table sheiladb.dbo.DARR_Detail_ExEVD
-select * into sheiladb.dbo.DARR_Detail_ExEVD from sheiladb.dbo.DARR_Final where rpt='EV' and caretype = 'urgent'
+select * into sheiladb.dbo.DARR_Detail_ExEVD from sheiladb.dbo.DARR_Final (nolock) where rpt='EV' and caretype = 'urgent'
 if object_id('sheiladb.dbo.DARR_Summary_StEVS') is not null drop table sheiladb.dbo.DARR_Summary_StEVS
-select * into sheiladb.dbo.DARR_Summary_StEVS from sheiladb.dbo.DARR_SFinal where rpt='EV' and caretype = 'elective'
+select * into sheiladb.dbo.DARR_Summary_StEVS from sheiladb.dbo.DARR_SFinal (nolock) where rpt='EV' and caretype = 'elective'
 if object_id('sheiladb.dbo.DARR_Detail_StEVD') is not null drop table sheiladb.dbo.DARR_Detail_StEVD
-select * into sheiladb.dbo.DARR_Detail_StEVD from sheiladb.dbo.DARR_Final where rpt='EV' and caretype = 'elective'
+select * into sheiladb.dbo.DARR_Detail_StEVD from sheiladb.dbo.DARR_Final (nolock) where rpt='EV' and caretype = 'elective'
 
 if object_id('sheiladb.dbo.DARR_Summary_ExAIS') is not null drop table sheiladb.dbo.DARR_Summary_ExAIS
-select * into sheiladb.dbo.DARR_Summary_ExAIS from sheiladb.dbo.DARR_SFinal where rpt='AI' and caretype = 'urgent'
+select * into sheiladb.dbo.DARR_Summary_ExAIS from sheiladb.dbo.DARR_SFinal (nolock) where rpt='AI' and caretype = 'urgent'
 if object_id('sheiladb.dbo.DARR_Detail_ExAID') is not null drop table sheiladb.dbo.DARR_Detail_ExAID
-select * into sheiladb.dbo.DARR_Detail_ExAID from sheiladb.dbo.DARR_Final where rpt='AI' and caretype = 'urgent'
+select * into sheiladb.dbo.DARR_Detail_ExAID from sheiladb.dbo.DARR_Final (nolock) where rpt='AI' and caretype = 'urgent'
 if object_id('sheiladb.dbo.DARR_Summary_ExPAS') is not null drop table sheiladb.dbo.DARR_Summary_ExPAS
-select * into sheiladb.dbo.DARR_Summary_ExPAS from sheiladb.dbo.DARR_SFinal where rpt = 'PA' and caretype = 'urgent'
+select * into sheiladb.dbo.DARR_Summary_ExPAS from sheiladb.dbo.DARR_SFinal (nolock) where rpt = 'PA' and caretype = 'urgent'
 if object_id('sheiladb.dbo.DARR_Detail_ExPAD') is not null drop table sheiladb.dbo.DARR_Detail_ExPAD
-select * into sheiladb.dbo.DARR_Detail_ExPAD from sheiladb.dbo.DARR_Final where rpt = 'PA' and caretype = 'urgent'
+select * into sheiladb.dbo.DARR_Detail_ExPAD from sheiladb.dbo.DARR_Final (nolock) where rpt = 'PA' and caretype = 'urgent'
 if object_id('sheiladb.dbo.DARR_Summary_ExAPS') is not null drop table sheiladb.dbo.DARR_Summary_ExAPS
-select * into sheiladb.dbo.DARR_Summary_ExAPS from sheiladb.dbo.DARR_SFinal where rpt in ('AI','PA') and caretype = 'urgent'
+select * into sheiladb.dbo.DARR_Summary_ExAPS from sheiladb.dbo.DARR_SFinal (nolock) where rpt in ('AI','PA') and caretype = 'urgent'
 if object_id('sheiladb.dbo.DARR_Detail_ExAPD') is not null drop table sheiladb.dbo.DARR_Detail_ExAPD
-select * into sheiladb.dbo.DARR_Detail_ExAPD from sheiladb.dbo.DARR_Final where rpt in ('AI','PA') and caretype = 'urgent'
+select * into sheiladb.dbo.DARR_Detail_ExAPD from sheiladb.dbo.DARR_Final (nolock) where rpt in ('AI','PA') and caretype = 'urgent'
 if object_id('sheiladb.dbo.DARR_Summary_StAIS') is not null drop table sheiladb.dbo.DARR_Summary_StAIS
-select * into sheiladb.dbo.DARR_Summary_StAIS from sheiladb.dbo.DARR_SFinal where rpt = 'AI' and caretype in ('routine','elective')
+select * into sheiladb.dbo.DARR_Summary_StAIS from sheiladb.dbo.DARR_SFinal (nolock) where rpt = 'AI' and caretype in ('routine','elective')
 if object_id('sheiladb.dbo.DARR_Detail_StAID') is not null drop table sheiladb.dbo.DARR_Detail_StAID
-select * into sheiladb.dbo.DARR_Detail_StAID from sheiladb.dbo.DARR_Final where rpt = 'AI' and caretype in ('routine','elective')
+select * into sheiladb.dbo.DARR_Detail_StAID from sheiladb.dbo.DARR_Final (nolock) where rpt = 'AI' and caretype in ('routine','elective')
 if object_id('sheiladb.dbo.DARR_Summary_StPAS') is not null drop table sheiladb.dbo.DARR_Summary_StPAS
-select * into sheiladb.dbo.DARR_Summary_StPAS from sheiladb.dbo.DARR_SFinal where rpt = 'PA' and caretype in ('routine','elective')
+select * into sheiladb.dbo.DARR_Summary_StPAS from sheiladb.dbo.DARR_SFinal (nolock) where rpt = 'PA' and caretype in ('routine','elective')
 if object_id('sheiladb.dbo.DARR_Detail_StPAD') is not null drop table sheiladb.dbo.DARR_Detail_StPAD
-select * into sheiladb.dbo.DARR_Detail_StPAD from sheiladb.dbo.DARR_Final where rpt = 'PA' and caretype in ('routine','elective')
+select * into sheiladb.dbo.DARR_Detail_StPAD from sheiladb.dbo.DARR_Final (nolock) where rpt = 'PA' and caretype in ('routine','elective')
 if object_id('sheiladb.dbo.DARR_Summary_StAPS') is not null drop table sheiladb.dbo.DARR_Summary_StAPS
-select * into sheiladb.dbo.DARR_Summary_StAPS from sheiladb.dbo.DARR_SFinal where rpt in ('AI','PA') and caretype in ('routine','elective')
+select * into sheiladb.dbo.DARR_Summary_StAPS from sheiladb.dbo.DARR_SFinal (nolock) where rpt in ('AI','PA') and caretype in ('routine','elective')
 if object_id('sheiladb.dbo.DARR_Detail_StAPD') is not null drop table sheiladb.dbo.DARR_Detail_StAPD
-select * into sheiladb.dbo.DARR_Detail_StAPD from sheiladb.dbo.DARR_Final where rpt in ('AI','PA') and caretype in ('routine','elective')
+select * into sheiladb.dbo.DARR_Detail_StAPD from sheiladb.dbo.DARR_Final (nolock) where rpt in ('AI','PA') and caretype in ('routine','elective')
 if object_id('sheiladb.dbo.DARR_Summary_IPS') is not null drop table sheiladb.dbo.DARR_Summary_IPS
-select * into sheiladb.dbo.DARR_Summary_IPS from sheiladb.dbo.DARR_SFinal where rpt = 'IP' and caretype in ('emergency')
+select * into sheiladb.dbo.DARR_Summary_IPS from sheiladb.dbo.DARR_SFinal (nolock) where rpt = 'IP' and caretype in ('emergency')
 if object_id('sheiladb.dbo.DARR_Detail_IPD') is not null drop table sheiladb.dbo.DARR_Detail_IPD
-select * into sheiladb.dbo.DARR_Detail_IPD from sheiladb.dbo.DARR_Final where rpt = 'IP' and caretype in ('emergency')
+select * into sheiladb.dbo.DARR_Detail_IPD from sheiladb.dbo.DARR_Final (nolock) where rpt = 'IP' and caretype in ('emergency')
 if object_id('sheiladb.dbo.DARR_Summary_RRS') is not null drop table sheiladb.dbo.DARR_Summary_RRS
-select * into sheiladb.dbo.DARR_Summary_RRS from sheiladb.dbo.DARR_SFinal where rpt = 'RR'
+select * into sheiladb.dbo.DARR_Summary_RRS from sheiladb.dbo.DARR_SFinal (nolock) where rpt = 'RR'
 if object_id('sheiladb.dbo.DARR_Detail_RRD') is not null drop table sheiladb.dbo.DARR_Detail_RRD
-select * into sheiladb.dbo.DARR_Detail_RRD from sheiladb.dbo.DARR_Final where rpt = 'RR' 
+select * into sheiladb.dbo.DARR_Detail_RRD from sheiladb.dbo.DARR_Final (nolock) where rpt = 'RR' 
 
------copy to reportsdb....----....----
 if object_id('reports.dbo.DARR_Final') is not null drop table reports.dbo.DARR_Final
-select * into reports.dbo.DARR_Final from sheiladb.dbo.DARR_Final
+select * into reports.dbo.DARR_Final from sheiladb.dbo.DARR_Final (nolock)
 if object_id('reports.dbo.DARR_SFinal') is not null drop table reports.dbo.DARR_SFinal
-select * into reports.dbo.DARR_SFinal from sheiladb.dbo.DARR_SFinal
+select * into reports.dbo.DARR_SFinal from sheiladb.dbo.DARR_SFinal (nolock)
 
 if object_id('reports.dbo.DARR_Summary_ExEVS') is not null drop table reports.dbo.DARR_Summary_ExEVS
-select * into reports.dbo.DARR_Summary_ExEVS from sheiladb.dbo.DARR_Summary_ExEVS 
+select * into reports.dbo.DARR_Summary_ExEVS from sheiladb.dbo.DARR_Summary_ExEVS  (nolock)
 if object_id('reports.dbo.DARR_Detail_ExEVD') is not null drop table reports.dbo.DARR_Detail_ExEVD
-select * into reports.dbo.DARR_Detail_ExEVD from sheiladb.dbo.DARR_Detail_ExEVD 
+select * into reports.dbo.DARR_Detail_ExEVD from sheiladb.dbo.DARR_Detail_ExEVD  (nolock)
 if object_id('reports.dbo.DARR_Summary_StEVS') is not null drop table reports.dbo.DARR_Summary_StEVS
-select * into reports.dbo.DARR_Summary_StEVS from sheiladb.dbo.DARR_Summary_StEVS 
+select * into reports.dbo.DARR_Summary_StEVS from sheiladb.dbo.DARR_Summary_StEVS  (nolock)
 if object_id('reports.dbo.DARR_Detail_StEVD') is not null drop table reports.dbo.DARR_Detail_StEVD
-select * into reports.dbo.DARR_Detail_StEVD from sheiladb.dbo.DARR_Detail_StEVD
+select * into reports.dbo.DARR_Detail_StEVD from sheiladb.dbo.DARR_Detail_StEVD (nolock)
 
 if object_id('reports.dbo.DARR_Summary_ExAIS') is not null drop table reports.dbo.DARR_Summary_ExAIS
-select * into reports.dbo.DARR_Summary_ExAIS from sheiladb.dbo.DARR_Summary_ExAIS
+select * into reports.dbo.DARR_Summary_ExAIS from sheiladb.dbo.DARR_Summary_ExAIS (nolock)
 if object_id('reports.dbo.DARR_Detail_ExAID') is not null drop table reports.dbo.DARR_Detail_ExAID
-select * into reports.dbo.DARR_Detail_ExAID from sheiladb.dbo.DARR_Detail_ExAID
+select * into reports.dbo.DARR_Detail_ExAID from sheiladb.dbo.DARR_Detail_ExAID (nolock)
 if object_id('reports.dbo.DARR_Summary_ExPAS') is not null drop table reports.dbo.DARR_Summary_ExPAS
-select * into reports.dbo.DARR_Summary_ExPAS from sheiladb.dbo.DARR_Summary_ExPAS 
+select * into reports.dbo.DARR_Summary_ExPAS from sheiladb.dbo.DARR_Summary_ExPAS  (nolock)
 if object_id('reports.dbo.DARR_Detail_ExPAD') is not null drop table reports.dbo.DARR_Detail_ExPAD
-select * into reports.dbo.DARR_Detail_ExPAD from sheiladb.dbo.DARR_Detail_ExPAD 
+select * into reports.dbo.DARR_Detail_ExPAD from sheiladb.dbo.DARR_Detail_ExPAD  (nolock)
 if object_id('reports.dbo.DARR_Summary_ExAPS') is not null drop table reports.dbo.DARR_Summary_ExAPS
-select * into reports.dbo.DARR_Summary_ExAPS from sheiladb.dbo.DARR_Summary_ExAPS 
+select * into reports.dbo.DARR_Summary_ExAPS from sheiladb.dbo.DARR_Summary_ExAPS v
 if object_id('reports.dbo.DARR_Detail_ExAPD') is not null drop table reports.dbo.DARR_Detail_ExAPD
-select * into reports.dbo.DARR_Detail_ExAPD from sheiladb.dbo.DARR_Detail_ExAPD
+select * into reports.dbo.DARR_Detail_ExAPD from sheiladb.dbo.DARR_Detail_ExAPD (nolock)
 if object_id('reports.dbo.DARR_Summary_StAIS') is not null drop table reports.dbo.DARR_Summary_StAIS
-select * into reports.dbo.DARR_Summary_StAIS from sheiladb.dbo.DARR_Summary_StAIS
+select * into reports.dbo.DARR_Summary_StAIS from sheiladb.dbo.DARR_Summary_StAIS (nolock)
 if object_id('reports.dbo.DARR_Detail_StAID') is not null drop table reports.dbo.DARR_Detail_StAID
-select * into reports.dbo.DARR_Detail_StAID from sheiladb.dbo.DARR_Detail_StAID
+select * into reports.dbo.DARR_Detail_StAID from sheiladb.dbo.DARR_Detail_StAID (nolock)
 if object_id('reports.dbo.DARR_Summary_StPAS') is not null drop table reports.dbo.DARR_Summary_StPAS
-select * into reports.dbo.DARR_Summary_StPAS from sheiladb.dbo.DARR_Summary_StPAS
+select * into reports.dbo.DARR_Summary_StPAS from sheiladb.dbo.DARR_Summary_StPAS (nolock)
 if object_id('reports.dbo.DARR_Detail_StPAD') is not null drop table reports.dbo.DARR_Detail_StPAD
-select * into reports.dbo.DARR_Detail_StPAD from sheiladb.dbo.DARR_Detail_StPAD
+select * into reports.dbo.DARR_Detail_StPAD from sheiladb.dbo.DARR_Detail_StPAD (nolock)
 if object_id('reports.dbo.DARR_Summary_StAPS') is not null drop table reports.dbo.DARR_Summary_StAPS
-select * into reports.dbo.DARR_Summary_StAPS from sheiladb.dbo.DARR_Summary_StAPS
+select * into reports.dbo.DARR_Summary_StAPS from sheiladb.dbo.DARR_Summary_StAPS (nolock)
 if object_id('reports.dbo.DARR_Detail_StAPD') is not null drop table reports.dbo.DARR_Detail_StAPD
-select * into reports.dbo.DARR_Detail_StAPD from sheiladb.dbo.DARR_Detail_StAPD
+select * into reports.dbo.DARR_Detail_StAPD from sheiladb.dbo.DARR_Detail_StAPD (nolock)
 if object_id('reports.dbo.DARR_Summary_IPS') is not null drop table reports.dbo.DARR_Summary_IPS
-select * into reports.dbo.DARR_Summary_IPS from sheiladb.dbo.DARR_Summary_IPS
+select * into reports.dbo.DARR_Summary_IPS from sheiladb.dbo.DARR_Summary_IPS (nolock)
 if object_id('reports.dbo.DARR_Detail_IPD') is not null drop table reports.dbo.DARR_Detail_IPD
-select * into reports.dbo.DARR_Detail_IPD from sheiladb.dbo.DARR_Detail_IPD
+select * into reports.dbo.DARR_Detail_IPD from sheiladb.dbo.DARR_Detail_IPD (nolock)
 if object_id('reports.dbo.DARR_Summary_RRS') is not null drop table reports.dbo.DARR_Summary_RRS
-select * into reports.dbo.DARR_Summary_RRS from sheiladb.dbo.DARR_Summary_RRS
+select * into reports.dbo.DARR_Summary_RRS from sheiladb.dbo.DARR_Summary_RRS (nolock)
 if object_id('reports.dbo.DARR_Detail_RRD') is not null drop table reports.dbo.DARR_Detail_RRD
-select * into reports.dbo.DARR_Detail_RRD from sheiladb.dbo.DARR_Detail_RRD
+select * into reports.dbo.DARR_Detail_RRD from sheiladb.dbo.DARR_Detail_RRD (nolock)
 
---TPL
 if object_id('Reports.dbo.TPL') is not null drop table Reports.dbo.TPL
 create table Reports.dbo.TPL 
 (planname varchar(2) not null,dbname varchar(2) not null,LOB varchar(80) not null
@@ -2550,7 +2661,8 @@ else r.dbname end,'')
 ,Diagnosis = isnull(rtrim(dc.description),'')
 ,isnull(r.reinsurance,'') Third_Party_Liability
 ,Anchor_Date = cast(case when r.receiptdate = '2078-12-31' then r.createdate else r.receiptdate end as date)
-from stage.dbo.referral r join stage.dbo.authcode ac on ac.codeid = r.servicecode and ac.dbname = r.dbname
+from stage.dbo.referral r (nolock)
+join stage.dbo.authcode ac on ac.codeid = r.servicecode and ac.dbname = r.dbname
 join stage.dbo.enrollkeys ek on ek.enrollid = r.enrollid and r.dbname = ek.dbname and
 	ek.segtype = 'int' and ek.effdate<ek.termdate
 join stage.dbo.member m on m.memid = r.memid and m.dbname = r.dbname join stage.dbo.benefitplan bp on bp.planid = ek.planid and bp.dbname = r.dbname
@@ -2561,29 +2673,29 @@ left join sheiladb.dbo.medicareplans mp on mp.dbname = r.dbname and mp.planid = 
 where r.authstatus <> 'closed' and r.reinsurance = '1'
 
 if object_id('SheilaDB.dbo.TPL') is not null drop table sheiladb.dbo.TPL
-select * into sheiladb.dbo.TPL from reports.dbo.TPL
+select * into sheiladb.dbo.TPL from reports.dbo.TPL (nolock)
 
---CA IPR
-if object_id('tempdb..#CA_IP1') is not null drop table #CA_IP1 --select distinct servicecode from #CA_IP1 where auth_category = ''
+if object_id('tempdb..#CA_IP1') is not null drop table #CA_IP1 
 select distinct LOBName
 ,Auth_Category = case when c.proccat is not null and ac.authtype in ('Outpatient','Ancillary') then c.proccat else isnull(d.proccat,'') end
 ,a.servicecode, rtrim(ac.description) Auth_Template
 ,a.AuthorizationID,Auth_Status = authhstatus	,Create_By = rtrim(q1.firstname) + ' ' + rtrim(q1.lastname)
 ,Assigned_To = rtrim(q1.firstname) + ' ' + rtrim(q1.lastname),Care_Type = a.acuity2,a.referralid,a.dbname
 ,a.receiptdate,a.referraldate
-into #CA_IP1 from stage.dbo.authdata a join stage.dbo.authcode ac on ac.codeid = a.servicecode and ac.dbname = a.dbname
+into #CA_IP1 from stage.dbo.authdata a  (nolock)
+join stage.dbo.authcode ac on ac.codeid = a.servicecode and ac.dbname = a.dbname
 left join stage.dbo.quser q1 on q1.userid = a.userid left join stage.dbo.quser q2 on q2.loginid = a.createid
-left join (select distinct ra.referralid, ra.dbname from stage.dbo.referralattribute ra 
+left join (select distinct ra.referralid, ra.dbname from stage.dbo.referralattribute ra (nolock)
 	join stage.dbo.qattribute q on q.attributeid = ra.attributeid and q.dbname = ra.dbname
 	where description in ('Medical Claims Review','Provider Appeal','Claim Workflow','A&D Appeal','Pharmacy Team','CIRT SUCCESSFULL? Yes/No') and ra.dbname = 'ca')
 	ra on ra.referralid = a.referralid and ra.dbname = a.dbname
 left join (select row_number()over (partition by referralid, dbname order by sequence asc) rw, * from 
-				(select distinct r.referralid, r.authorizationid, r.dbname, ProcCat, aus.sequence from stage.dbo.referral r 
+				(select distinct r.referralid, r.authorizationid, r.dbname, ProcCat, aus.sequence from stage.dbo.referral r (nolock)
 				join stage.dbo.enrollkeys ek on ek.enrollid = r.enrollid and ek.dbname = r.dbname and ek.segtype = 'int' and ek.effdate < ek.termdate
 				join sheiladb.dbo.medicareplans mp on mp.planid = ek.planid and mp.dbname = ek.dbname
 				join stage.dbo.authservice aus on r.referralid = aus.referralid and r.dbname = aus.dbname join stage.dbo.authcode ac on ac.codeid = r.servicecode and ac.dbname = r.dbname
 				join sheiladb.dbo.authtat_ai_category c on c.codeid = aus.codeid collate database_default and ac.authtype in ('Ancillary','Outpatient') and r.servicecode = '210' and mp.planname <>'FL'
-				union select distinct r.referralid, r.authorizationid, r.dbname, category, aus.sequence from stage.dbo.referral r 
+				union select distinct r.referralid, r.authorizationid, r.dbname, category, aus.sequence from stage.dbo.referral r (nolock)
 				join stage.dbo.enrollkeys ek on ek.enrollid = r.enrollid and ek.dbname = r.dbname and ek.segtype = 'int' and ek.effdate < ek.termdate
 				join sheiladb.dbo.medicareplans mp on mp.planid = ek.planid and mp.dbname = ek.dbname
 				join stage.dbo.authservice aus on r.referralid = aus.referralid and r.dbname = aus.dbname join stage.dbo.authcode ac on ac.codeid = r.servicecode and ac.dbname = r.dbname
@@ -2597,18 +2709,21 @@ and a.createid not like '%auth%' and a.createid not like '%auto%' and a.authoriz
 and (year(a.receiptdate) >= year(getdate())-1 or year(a.referraldate) >= year(getdate())-1)
 
 if object_id('tempdb..#CA_IPdate1') is not null drop table #CA_IPdate1
-select distinct a.authorizationid, thevalue, a.referralid, a.dbname, description, thegroup into #CA_IPdate1 from #CA_IP1 a 
-left join (select ra.dbname, thevalue, description, thegroup, referralid from stage.dbo.referralattribute ra join stage.dbo.qattribute q on  q.attributeid = ra.attributeid and ra.dbname = q.dbname
+select distinct a.authorizationid, thevalue, a.referralid, a.dbname, description, thegroup into #CA_IPdate1 from #CA_IP1 a (nolock)
+left join (select ra.dbname, thevalue, description, thegroup, referralid from stage.dbo.referralattribute ra (nolock)
+join stage.dbo.qattribute q on  q.attributeid = ra.attributeid and ra.dbname = q.dbname
 			where description in ('Decision Date','Auth Receipt Date','Extension') ) ra on a.dbname = ra.dbname and a.referralid = ra.referralid
 delete from #CA_IPdate1 where thevalue = ''  or thevalue='MM/DD/YYY' or thevalue like '%.%' or thevalue like '%:%' or thevalue like '%,%' or sheiladb.dbo.fn_IsDate(thevalue)=0
 if object_id ('tempdb..#CA_IPtime1') is not null drop table #CA_IPtime1
 select distinct a.DBname, case when len(ltrim(rtrim(thevalue))) =3 then '0' + CAST(ltrim(rtrim(thevalue)) as varchar) else ltrim(rtrim(thevalue)) end TheValue,a.referralid,a.authorizationid, description, thegroup 
-into #CA_IPtime1 from stage.dbo.referralattribute ra join stage.dbo.qattribute q on q.attributeid = ra.attributeid and q.dbname = ra.dbname 
+into #CA_IPtime1 from stage.dbo.referralattribute ra (nolock)
+join stage.dbo.qattribute q on q.attributeid = ra.attributeid and q.dbname = ra.dbname 
 join #CA_IP1 a on a.dbname = ra.dbname and a.referralid = ra.referralid
 			where q.description in ('Decision Time','Auth Receipt Time','Extension Time')and thevalue>'' and len(thevalue)=4 
 			and thevalue not like '%:%' and thevalue not like '%.%' and thevalue not like '%/%' and thevalue not like '%,%'and ISNUMERIC(thevalue)=1 
 if object_id ('tempdb..#CA_IPtime2') is not null drop table #CA_IPtime2 
-select distinct DBname,ReferralID,authorizationid,TheValue,Description,TheGroup into #CA_IPtime2 from #CA_IPtime1 where left(TheValue,2) between 0 and 23 and right(thevalue,2) between 0 and 59
+select distinct DBname,ReferralID,authorizationid,TheValue,Description,TheGroup into #CA_IPtime2 from #CA_IPtime1 (nolock)
+where left(TheValue,2) between 0 and 23 and right(thevalue,2) between 0 and 59
 
 if object_id('tempdb..#CA_IPDatetime1') is not null drop table #CA_IPDatetime1
 select distinct a.referralid, a.authorizationid,a.receiptdate,a.referraldate
@@ -2617,7 +2732,8 @@ when c.thevalue is null and a.receiptdate = '2078-12-31' then cast(a.referraldat
 , Auth_Receipt_Time = cast(left(f.thevalue,2)+':'+right(f.thevalue,2) as time)
 , Decision_Date = cast(b.thevalue as date)
 , Decision_Time = cast(left(e.thevalue,2)+':'+right(e.thevalue,2) as time), Extension_Date = cast(d.thevalue as date)
-into #CA_IPDatetime1 from #CA_IP1 a left join #CA_IPdate1 b on a.referralid = b.referralid and a.authorizationid = b.authorizationid and b.description = 'Decision Date'
+into #CA_IPDatetime1 from #CA_IP1 a (nolock)
+left join #CA_IPdate1 b on a.referralid = b.referralid and a.authorizationid = b.authorizationid and b.description = 'Decision Date'
 left join #CA_IPdate1 c on a.referralid = c.referralid and a.authorizationid = c.authorizationid and c.description = 'Auth Receipt Date'
 left join #CA_IPdate1 d on a.referralid = d.referralid and a.authorizationid = d.authorizationid and d.description = 'Extension Date'
 left join #CA_IPtime2 e on a.referralid = e.referralid and a.authorizationid = e.authorizationid and e.description = 'Decision Time'
@@ -2630,7 +2746,8 @@ select referralid, authorizationid
 , Decision_Date = isnull(convert(varchar,min(Decision_Date),120),'')
 , Decision_Time = isnull(convert(varchar,min(Decision_Time),120),'')
 , Extension_Date = isnull(convert(varchar,min(Extension_Date),120),'')
-into #CA_IPDatetime2 from #CA_IPDatetime1 group by referralid, authorizationid
+into #CA_IPDatetime2 from #CA_IPDatetime1 (nolock)
+group by referralid, authorizationid
 
 if object_id('sheiladb.dbo.CA_IPR_Final') is not null drop table sheiladb.dbo.CA_IPR_Final
 	select a.*
@@ -2638,12 +2755,28 @@ if object_id('sheiladb.dbo.CA_IPR_Final') is not null drop table sheiladb.dbo.CA
 	,Anchor_Date = cast(c.Auth_Receipt_Date as datetime)
 	,Createdate = getdate()
 	into sheiladb.dbo.CA_IPR_Final
-	from #CA_IP1 a 
+	from #CA_IP1 a (nolock)
 	left join #CA_IPDatetime2 b on b.referralid = a.referralid
 	left join #CA_IPDatetime1 c on c.referralid = a.referralid
 
 if object_id('reports.dbo.CA_IPR_Final') is not null drop table reports.dbo.CA_IPR_Final
 	select *
 	into reports.dbo.CA_IPR_Final
-	from sheiladb.dbo.CA_IPR_Final
+	from sheiladb.dbo.CA_IPR_Final (nolock)
 
+
+/* --issue example
+select planname,memid,authorizationid,ReceiptDate,IssueDate,'2020-06-12'CutOver_56_QNXT
+from DARR_Final (nolock) where authorizationid in ('2016400314','2016100641','2016000031') and planname='oh'
+order by authorizationid
+
+select planname,memid,authorizationid,cast(ReceiptDate as date)ReceiptDate,cast(UTCReceiptDate as date)UTCReceiptDate,cast(ref_createdate as date)IssueDate,'2020-06-12'CutOver_56_QNXT
+from stage.dbo.authdata (nolock) where planname='OH' and authorizationid in ('2016400314','2016100641','2016000031')
+order by authorizationid
+
+select distinct b.description,a.*
+from stage.dbo.referralattribute a (nolock)
+inner join stage.dbo.qattribute b (nolock) on a.attributeid=b.attributeid
+where a.dbname='oh' and a.referralid='QMXRM7558174'
+order by b.description
+*/
